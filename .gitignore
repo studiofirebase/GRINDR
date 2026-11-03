@@ -1,0 +1,34 @@
+.DS_Store
+node_modules
+/build
+/.svelte-kit
+/package
+.env
+.env.*
+!.env.example
+vite.config.js.timestamp-*
+vite.config.ts.timestamp-*
+test-results
+/.bun-cache/
+
+# Cloudflare Containers: contexto de build copiado (crate + frontend) e lock do Worker
+/web-server/cloudflare/Cargo.toml
+/web-server/cloudflare/Cargo.lock
+/web-server/cloudflare/src/
+/web-server/cloudflare/build/
+/web-server/cloudflare/bun.lock
+
+# Nix
+/result
+/result-*
+.direnv/
+
+# Android signing
+keystore.properties
+*.jks
+*.keystore
+
+.local
+/coverage
+/.updater-dev/
+/e2e/updater/.state/

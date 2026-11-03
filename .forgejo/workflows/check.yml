@@ -1,0 +1,126 @@
+name: check
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+concurrency:
+  group: open-grind-check-${{ forgejo.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ["fork", "toolchain", "amd-4c8g", "hetzner"]
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: >-
+          /usr/bin/env
+          -u GITHUB_TOKEN -u FORGEJO_TOKEN
+          -u ACTIONS_RUNTIME_TOKEN
+          -u ACTIONS_ID_TOKEN_REQUEST_TOKEN -u ACTIONS_ID_TOKEN_REQUEST_URL
+          -u ACTIONS_CACHE_URL -u ACTIONS_RUNTIME_URL -u ACTIONS_RESULTS_URL
+          bash --noprofile --norc -e -o pipefail {0}
+    env:
+      PR_NUMBER: ${{ forgejo.event.pull_request.number }}
+      EXPECTED_SHA: ${{ forgejo.event.pull_request.head.sha }}
+      CI_WORKSPACE: /opt/open-grind-ci
+      CHECKS_CACHE_DIR: /opt/open-grind-cache
+      CARGO_HOME: /opt/open-grind-cache/cargo
+      CARGO_TARGET_DIR: /opt/open-grind-cache/target
+      RUSTUP_HOME: /opt/rust/rustup
+      PLAYWRIGHT_BROWSERS_PATH: /opt/playwright
+      CARGO_TERM_PROGRESS_WHEN: never
+      NODE_OPTIONS: --max-old-space-size=6144
+      CHECKS_CACHE_S3_ENDPOINT: ${{ vars.CHECKS_CACHE_S3_ENDPOINT }}
+      CHECKS_CACHE_S3_BUCKET: ${{ vars.CHECKS_CACHE_S3_BUCKET }}
+      CHECKS_CACHE_S3_ACCESS_KEY: ${{ vars.CHECKS_CACHE_S3_RO_ACCESS_KEY }}
+      CHECKS_CACHE_S3_SECRET_KEY: ${{ vars.CHECKS_CACHE_S3_RO_SECRET_KEY }}
+    steps:
+      - name: Verify CI environment
+        run: |
+          set -euo pipefail
+
+          leaked=$(env | grep -iE '(TOKEN|SECRET|PASSWORD|CREDENTIAL|KEY)=.' \
+            | grep -vE '^CHECKS_CACHE_S3_(ACCESS_KEY|SECRET_KEY)=' || true)
+          [ -z "$leaked" ] || { echo "FATAL: privileged credential reachable by PR code:"; echo "$leaked" | sed 's/=.*/=<redacted>/'; exit 1; }
+
+      - name: Check out PR
+        run: |
+          set -euo pipefail
+
+          : "${CI_WORKSPACE:?}"
+          rm -rf "$CI_WORKSPACE"
+          mkdir -p "$CI_WORKSPACE" "$CHECKS_CACHE_DIR"
+          cd "$CI_WORKSPACE"
+
+          git init -q .
+          git remote add origin "$FORGEJO_SERVER_URL/$FORGEJO_REPOSITORY.git"
+          git fetch -q --depth 1 origin "refs/pull/${PR_NUMBER}/head"
+          git checkout -q FETCH_HEAD
+          [ -z "$EXPECTED_SHA" ] || [ "$(git rev-parse HEAD)" = "$EXPECTED_SHA" ] \
+            || { echo "FATAL: PR head moved since approval (want $EXPECTED_SHA, got $(git rev-parse HEAD))"; exit 1; }
+          git submodule update --init --recursive --quiet
+
+      - name: Load CI cache
+        run: |
+          set -euo pipefail
+
+          cd "$CI_WORKSPACE"
+          bun run ci/cache.ts restore
+          echo "cargo home: $(ls "$CARGO_HOME" 2>/dev/null | tr '\n' ' ')| free: $(df -h --output=avail "$CHECKS_CACHE_DIR" | tail -1)"
+
+      - name: Install Rust dependencies
+        run: |
+          set -euo pipefail
+
+          cd "$CI_WORKSPACE"
+          . ci/rust-env.sh
+          bun run patch-deps
+          cargo metadata --quiet --manifest-path src-tauri/Cargo.toml --format-version 1 >/dev/null
+
+      - name: Install JS dependencies
+        run: cd "$CI_WORKSPACE" && bun install --frozen-lockfile --no-summary
+
+      - name: Check the version
+        run: cd "$CI_WORKSPACE" && bun run check:version
+
+      - name: Check the Android backup rules
+        run: cd "$CI_WORKSPACE" && bun run check:backup-rules
+
+      - name: Check the credits against the lockfiles
+        run: cd "$CI_WORKSPACE" && bun run check:credits-sync
+
+      - name: Lint
+        env:
+          NODE_OPTIONS: --max-old-space-size=2048
+        run: cd "$CI_WORKSPACE" && bun ci/lint.ts
+
+      - name: Formatting
+        run: cd "$CI_WORKSPACE" && bunx prettier --check .
+
+      - name: Shared config
+        run: cd "$CI_WORKSPACE" && bun run check:config
+
+      - name: Svelte types
+        run: cd "$CI_WORKSPACE" && bun run check
+
+      - name: Repository tooling
+        run: cd "$CI_WORKSPACE" && bun run check:tools
+
+      - name: Unit tests
+        run: cd "$CI_WORKSPACE" && bun run test:unit
+
+      - name: Rust tests
+        run: |
+          set -euo pipefail
+
+          cd "$CI_WORKSPACE"
+          . ci/rust-env.sh
+          bun run test:rust
+
+      - name: End-to-end tests
+        run: cd "$CI_WORKSPACE" && bun run test:e2e
+
+      - name: Layout guard
+        run: cd "$CI_WORKSPACE" && bun run test:e2e:guard

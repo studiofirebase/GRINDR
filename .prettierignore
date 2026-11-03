@@ -1,0 +1,16 @@
+bun.lock
+flake.lock
+node_modules
+/.claude
+/build
+/.svelte-kit
+/static
+/reverse
+/docs
+/contrib
+/src-tauri
+/test-results
+/playwright-report
+/coverage
+KEYS.md
+/src/lib/credits/generated.json

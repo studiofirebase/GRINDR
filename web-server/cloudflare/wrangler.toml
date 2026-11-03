@@ -1,0 +1,27 @@
+name = "open-grind-web"
+main = "worker/index.ts"
+compatibility_date = "2026-10-26"
+
+[[containers]]
+class_name = "OpenGrindWeb"
+image = "./Dockerfile"
+instance_type = "basic"
+max_instances = 1
+
+[[durable_objects.bindings]]
+name = "OPEN_GRIND_WEB"
+class_name = "OpenGrindWeb"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["OpenGrindWeb"]
+
+[vars]
+OG_ORIGIN = "https://meuprofile.com"
+OG_ADMIN_USER = "italosantos"
+
+# Dominio proprio: o Worker atende meuprofile.com (zona na mesma conta).
+# OG_PASSWORD vai como secret (wrangler secret put OG_PASSWORD).
+routes = [
+	{ pattern = "meuprofile.com/*", zone_name = "meuprofile.com" },
+]

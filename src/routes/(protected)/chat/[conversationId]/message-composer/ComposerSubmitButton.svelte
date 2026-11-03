@@ -1,0 +1,22 @@
+<script>
+	import PaperPlaneRightIcon from "phosphor-svelte/lib/PaperPlaneRightIcon";
+
+	import { softKeyboardVisibility } from "$lib/platform/android-native-bridge";
+	import { getMessageComposerContext } from "./message-composer-context.svelte";
+	import PrimaryComposerButton from "./PrimaryComposerButton.svelte";
+
+	const { disabled } = $derived(getMessageComposerContext()());
+</script>
+
+<PrimaryComposerButton
+	type="submit"
+	aria-label="Send message"
+	{disabled}
+	onpointerdown={(event) => {
+		if (softKeyboardVisibility() !== false) event.preventDefault();
+	}}
+>
+	{#snippet icon({ ...props })}
+		<PaperPlaneRightIcon weight="fill" {...props} />
+	{/snippet}
+</PrimaryComposerButton>

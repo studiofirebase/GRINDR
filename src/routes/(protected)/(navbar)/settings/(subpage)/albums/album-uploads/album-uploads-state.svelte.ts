@@ -1,0 +1,505 @@
+import { toast } from "svelte-sonner";
+
+import { accountScoped } from "$lib/api/account-caches";
+import { httpStatusOf } from "$lib/api/api-error";
+import {
+	addDrawerMediaToAlbum,
+	type AlbumContentResponse,
+	getAlbumContent,
+	getAlbumContentProcessing,
+	getMyAlbums,
+	uploadAlbumContent,
+} from "$lib/api/messaging/albums";
+import { errorKindOf, uploadRefusalMessage } from "$lib/api/methods";
+import { albumMediaCounts } from "$lib/components/album/album";
+import { forgetAlbumSlides } from "$lib/components/album/album-lightbox";
+import {
+	discardStagedMedia,
+	type MediaFileInspection,
+	type MediaFileKind,
+} from "$lib/platform/media-file";
+import { delay } from "$lib/util/delay";
+import { Generation } from "$lib/util/generation";
+import type {
+	AlbumContent,
+	AlbumStorageLimits,
+} from "$lib/model/messaging/albums";
+import type { PickedMedia } from "$lib/platform/media-picker";
+
+type UploadKind = Exclude<MediaFileKind, "unsupported">;
+
+export type InspectedPick = {
+	media: PickedMedia;
+	inspection: MediaFileInspection & { kind: UploadKind };
+};
+
+export type PendingUpload = { key: string; kind: UploadKind };
+
+type UploadLanding = {
+	land: (item: AlbumContent) => void;
+	replace: (item: AlbumContent) => void;
+	forget: (contentId: number) => void;
+};
+
+export type UploadLimits = Pick<
+	AlbumStorageLimits,
+	| "maxContentSize"
+	| "maxContentSizeHumanReadable"
+	| "maxContentItemsPerAlbum"
+	| "maxVideosPerAlbum"
+>;
+
+type QueuedUpload = InspectedPick & { albumId: number; limits: UploadLimits };
+
+const RECONCILE_INTERVAL_MS = 5_000;
+
+const RECONCILE_ATTEMPTS = 12;
+
+const PROCESSING_INTERVAL_MS = 2_500;
+
+const PROCESSING_ATTEMPTS = 120;
+
+const LOST_READ_MESSAGE = "Added. Reopen the album to see it";
+
+export function isPlanLimitReached(error: unknown): boolean {
+	return httpStatusOf(error) === 402;
+}
+
+function isSessionGone(error: unknown): boolean {
+	const kind = errorKindOf(error);
+	return kind === "SessionCleared" || kind === "NotSignedIn";
+}
+
+function isRefusal(error: unknown): boolean {
+	const status = httpStatusOf(error);
+	if (status !== null) return status < 500;
+	const kind = errorKindOf(error);
+	return kind === "ContentTooLarge" || kind === "Media";
+}
+
+function outOfRoomMessage({ inspection, limits }: QueuedUpload): string {
+	const count =
+		inspection.kind === "video"
+			? limits.maxVideosPerAlbum
+			: limits.maxContentItemsPerAlbum;
+	const noun = inspection.kind === "video" ? "video" : "photo";
+	return `This album already holds ${count} ${noun}${count === 1 ? "" : "s"}`;
+}
+
+function failureMessage(kind: UploadKind): string {
+	return kind === "video" ? "Couldn't add video" : "Couldn't add photo";
+}
+
+class AlbumUploadsState {
+	readonly #profileId: number;
+	#queue = $state.raw<QueuedUpload[]>([]);
+	#landing = $state.raw<QueuedUpload[]>([]);
+	#landings = new Map<number, Promise<void>>();
+	#drafts = new Map<number, UploadLanding>();
+	#landed = new Map<number, Set<number>>();
+	#watching = new Set<string>();
+	#generation = new Generation();
+	#destroyed = false;
+	#running = false;
+
+	constructor({ profileId }: { profileId: number }) {
+		this.#profileId = profileId;
+	}
+
+	pending(albumId: number): PendingUpload[] {
+		return [...this.#landing, ...this.#queue]
+			.filter((queued) => queued.albumId === albumId)
+			.map(({ media, inspection }) => ({
+				key: media.key,
+				kind: inspection.kind,
+			}));
+	}
+
+	hasPending(albumId: number): boolean {
+		return this.pending(albumId).length > 0;
+	}
+
+	attachDraft({
+		albumId,
+		draft,
+	}: {
+		albumId: number;
+		draft: UploadLanding;
+	}): void {
+		this.#drafts.set(albumId, draft);
+	}
+
+	detachDraft({
+		albumId,
+		draft,
+	}: {
+		albumId: number;
+		draft: UploadLanding;
+	}): void {
+		if (this.#drafts.get(albumId) === draft) this.#drafts.delete(albumId);
+	}
+
+	destroy(): void {
+		this.#destroyed = true;
+		this.#drop();
+	}
+
+	enqueue({
+		albumId,
+		inspected,
+		limits,
+		content,
+	}: {
+		albumId: number;
+		inspected: InspectedPick[];
+		limits: UploadLimits;
+		content: AlbumContent[];
+	}): { leftOutFull: number; leftOutVideoSlot: number } {
+		let leftOutFull = 0;
+		let leftOutVideoSlot = 0;
+		if (this.#destroyed) return { leftOutFull, leftOutVideoSlot };
+		const known = this.#landedIds(albumId);
+		for (const item of content) known.add(item.contentId);
+
+		let { photos, videos } = albumMediaCounts({
+			content,
+			pending: this.pending(albumId),
+		});
+		const accepted: QueuedUpload[] = [];
+		const leftOut: PickedMedia[] = [];
+		for (const pick of [
+			...inspected.filter(
+				({ inspection }) => inspection.kind === "video",
+			),
+			...inspected.filter(
+				({ inspection }) => inspection.kind === "photo",
+			),
+		]) {
+			if (pick.inspection.kind === "video") {
+				if (videos >= limits.maxVideosPerAlbum) {
+					leftOutVideoSlot += 1;
+					leftOut.push(pick.media);
+					continue;
+				}
+				videos += 1;
+			} else {
+				if (photos >= limits.maxContentItemsPerAlbum) {
+					leftOutFull += 1;
+					leftOut.push(pick.media);
+					continue;
+				}
+				photos += 1;
+			}
+			accepted.push({ ...pick, albumId, limits });
+		}
+
+		void discardStagedMedia(leftOut);
+		this.#queue = [...this.#queue, ...accepted];
+		void this.#run();
+		return { leftOutFull, leftOutVideoSlot };
+	}
+
+	#drop(): void {
+		this.#generation.next();
+		const waiting = this.#queue.slice(this.#running ? 1 : 0);
+		void discardStagedMedia(waiting.map(({ media }) => media));
+		this.#queue = [];
+		this.#landing = [];
+		this.#landings.clear();
+		this.#drafts.clear();
+		this.#landed.clear();
+		this.#watching.clear();
+	}
+
+	#landedIds(albumId: number): Set<number> {
+		const ids = this.#landed.get(albumId) ?? new Set<number>();
+		this.#landed.set(albumId, ids);
+		return ids;
+	}
+
+	async #run(): Promise<void> {
+		if (this.#running) return;
+		this.#running = true;
+		try {
+			for (
+				let entry = this.#queue[0];
+				entry !== undefined;
+				entry = this.#queue[0]
+			) {
+				await this.#upload(entry);
+				this.#queue = this.#queue.filter((queued) => queued !== entry);
+			}
+		} finally {
+			this.#running = false;
+		}
+	}
+
+	async #upload(entry: QueuedUpload): Promise<void> {
+		const generation = this.#generation.current;
+		const before = new Set(this.#landedIds(entry.albumId));
+		let sha256: string | null = null;
+		let contentId: number;
+		try {
+			({ contentId } = await uploadAlbumContent({
+				albumId: entry.albumId,
+				media: entry.media,
+				inspection: entry.inspection,
+				limits: entry.limits,
+				profileId: this.#profileId,
+				onHashed: (hash) => (sha256 = hash),
+			}));
+		} catch (error) {
+			console.error(error);
+			if (!this.#generation.isStale(generation))
+				await this.#recover({ entry, error, sha256, before });
+			return;
+		}
+		if (!this.#generation.isStale(generation))
+			this.#landInBackground({ entry, contentId });
+	}
+
+	#landInBackground({
+		entry,
+		contentId,
+	}: {
+		entry: QueuedUpload;
+		contentId: number;
+	}): void {
+		const { albumId } = entry;
+		this.#landedIds(albumId).add(contentId);
+		this.#queue = this.#queue.filter((queued) => queued !== entry);
+		this.#landing = [...this.#landing, entry];
+		const previous = this.#landings.get(albumId) ?? Promise.resolve();
+		const landed = previous
+			.then(() => this.#land({ albumId, contentId }))
+			.finally(() => {
+				this.#landing = this.#landing.filter(
+					(landing) => landing !== entry,
+				);
+			});
+		this.#landings.set(
+			albumId,
+			landed.catch((error: unknown) => console.error(error)),
+		);
+	}
+
+	async #recover({
+		entry,
+		error,
+		sha256,
+		before,
+	}: {
+		entry: QueuedUpload;
+		error: unknown;
+		sha256: string | null;
+		before: Set<number>;
+	}): Promise<void> {
+		if (isSessionGone(error)) {
+			this.#drop();
+			return;
+		}
+		const generation = this.#generation.current;
+		if (!isRefusal(error)) {
+			const contentId = await this.#reconcile({
+				albumId: entry.albumId,
+				sha256,
+				before,
+			});
+			if (this.#generation.isStale(generation)) return;
+			if (contentId !== null) {
+				this.#landInBackground({ entry, contentId });
+				return;
+			}
+		}
+		if (isPlanLimitReached(error)) {
+			const outOfRoom = (queued: QueuedUpload) =>
+				queued !== entry &&
+				queued.albumId === entry.albumId &&
+				queued.inspection.kind === entry.inspection.kind;
+			void discardStagedMedia(
+				this.#queue.filter(outOfRoom).map(({ media }) => media),
+			);
+			this.#queue = this.#queue.filter((queued) => !outOfRoom(queued));
+			toast.error(outOfRoomMessage(entry));
+			return;
+		}
+		toast.error(
+			uploadRefusalMessage({
+				error,
+				limitLabel: entry.limits.maxContentSizeHumanReadable,
+			}) ?? failureMessage(entry.inspection.kind),
+		);
+	}
+
+	async #reconcile({
+		albumId,
+		sha256,
+		before,
+	}: {
+		albumId: number;
+		sha256: string | null;
+		before: Set<number>;
+	}): Promise<number | null> {
+		const generation = this.#generation.current;
+		for (let attempt = 0; attempt < RECONCILE_ATTEMPTS; attempt += 1) {
+			await delay(RECONCILE_INTERVAL_MS);
+			if (this.#generation.isStale(generation)) return null;
+			const albums = await getMyAlbums()
+				.then((response) => response.albums)
+				.catch(() => null);
+			if (this.#generation.isStale(generation)) return null;
+			if (albums === null) continue;
+			const landed = albums
+				.find((album) => album.albumId === albumId)
+				?.content.find(
+					(item) =>
+						!before.has(item.contentId) &&
+						(sha256 === null || item.contentHash === sha256),
+				);
+			if (landed !== undefined) return landed.contentId;
+		}
+		return null;
+	}
+
+	async addFromDrawer({
+		albumId,
+		mediaIds,
+		present,
+	}: {
+		albumId: number;
+		mediaIds: number[];
+		present: readonly number[];
+	}): Promise<void> {
+		await addDrawerMediaToAlbum({ albumId, mediaIds });
+		forgetAlbumSlides(albumId);
+		void this.#landAdded({ albumId, present: new Set(present) });
+	}
+
+	async #landAdded({
+		albumId,
+		present,
+	}: {
+		albumId: number;
+		present: ReadonlySet<number>;
+	}): Promise<void> {
+		const generation = this.#generation.current;
+		const content = await this.#readContent(albumId);
+		if (this.#generation.isStale(generation)) return;
+		if (content === null) {
+			toast.success(LOST_READ_MESSAGE);
+			return;
+		}
+		const draft = this.#drafts.get(albumId);
+		const added = content.filter((item) => !present.has(item.contentId));
+		for (const item of added.toReversed()) {
+			this.#landedIds(albumId).add(item.contentId);
+			draft?.land(item);
+			if (item.processing)
+				void this.#watch({ albumId, contentId: item.contentId });
+		}
+	}
+
+	async #land({
+		albumId,
+		contentId,
+	}: {
+		albumId: number;
+		contentId: number;
+	}): Promise<void> {
+		this.#landedIds(albumId).add(contentId);
+		forgetAlbumSlides(albumId);
+		const draft = this.#drafts.get(albumId);
+		if (draft === undefined) return;
+		const generation = this.#generation.current;
+		const content = await this.#readContent(albumId);
+		if (this.#generation.isStale(generation)) return;
+		if (content === null) {
+			toast.success(LOST_READ_MESSAGE);
+			return;
+		}
+		const item = content.find((present) => present.contentId === contentId);
+		if (item === undefined) return;
+		draft.land(item);
+		if (item.processing) void this.#watch({ albumId, contentId });
+	}
+
+	async #readContent(
+		albumId: number,
+	): Promise<AlbumContentResponse["content"] | null> {
+		const generation = this.#generation.current;
+		for (let attempt = 0; attempt <= RECONCILE_ATTEMPTS; attempt += 1) {
+			if (attempt > 0) await delay(RECONCILE_INTERVAL_MS);
+			if (this.#generation.isStale(generation)) return null;
+			const content = await getAlbumContent(albumId)
+				.then((response) => response.content)
+				.catch((error: unknown) => {
+					console.error(error);
+					return null;
+				});
+			if (this.#generation.isStale(generation)) return null;
+			if (content !== null) return content;
+		}
+		return null;
+	}
+
+	async #watch({
+		albumId,
+		contentId,
+	}: {
+		albumId: number;
+		contentId: number;
+	}): Promise<void> {
+		const token = `${albumId}:${contentId}`;
+		if (this.#watching.has(token)) return;
+		this.#watching.add(token);
+		const generation = this.#generation.current;
+		try {
+			for (let attempt = 0; attempt < PROCESSING_ATTEMPTS; attempt += 1) {
+				await delay(PROCESSING_INTERVAL_MS);
+				if (this.#generation.isStale(generation)) return;
+				let processing: boolean;
+				try {
+					({ processing } = await getAlbumContentProcessing({
+						albumId,
+						contentId,
+					}));
+				} catch (error) {
+					if (httpStatusOf(error) !== 404) continue;
+					this.#drafts.get(albumId)?.forget(contentId);
+					return;
+				}
+				if (processing) continue;
+				await this.#processed({ albumId, contentId });
+				return;
+			}
+		} finally {
+			if (!this.#generation.isStale(generation))
+				this.#watching.delete(token);
+		}
+	}
+
+	async #processed({
+		albumId,
+		contentId,
+	}: {
+		albumId: number;
+		contentId: number;
+	}): Promise<void> {
+		const content = await this.#readContent(albumId);
+		if (content === null) return;
+		const draft = this.#drafts.get(albumId);
+		const item = content.find((present) => present.contentId === contentId);
+		if (item === undefined) {
+			draft?.forget(contentId);
+			return;
+		}
+		forgetAlbumSlides(albumId);
+		draft?.replace(item);
+	}
+}
+
+export type AlbumUploads = AlbumUploadsState;
+
+export const getAlbumUploads = accountScoped(
+	(profileId) => new AlbumUploadsState({ profileId }),
+);

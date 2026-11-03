@@ -1,0 +1,51 @@
+name: warm
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - src-tauri/Cargo.lock
+      - rust-toolchain.toml
+      - .forgejo/workflows/warm.yml
+  workflow_dispatch:
+
+concurrency:
+  group: open-grind-warm
+  cancel-in-progress: false
+
+jobs:
+  warm:
+    runs-on: ["toolchain", "8c16g", "hetzner"]
+    timeout-minutes: 50
+    steps:
+      - name: Build the dependency graph from trusted code and publish the cache
+        env:
+          CI_WORKSPACE: /opt/open-grind-ci
+          CHECKS_CACHE_DIR: /opt/open-grind-cache
+          RUSTUP_HOME: /opt/rust/rustup
+          CARGO_TERM_PROGRESS_WHEN: never
+          CHECKS_CACHE_S3_ENDPOINT: ${{ vars.CHECKS_CACHE_S3_ENDPOINT }}
+          CHECKS_CACHE_S3_BUCKET: ${{ vars.CHECKS_CACHE_S3_BUCKET }}
+          CHECKS_CACHE_S3_ACCESS_KEY: ${{ secrets.CHECKS_CACHE_S3_RW_ACCESS_KEY }}
+          CHECKS_CACHE_S3_SECRET_KEY: ${{ secrets.CHECKS_CACHE_S3_RW_SECRET_KEY }}
+        run: |
+          set -euo pipefail
+
+          step() { printf '\n==> %s [%s]\n' "$*" "$(date -u +%T)" >&2; "$@"; }
+
+          rm -rf "$CI_WORKSPACE" "$CHECKS_CACHE_DIR"
+          mkdir -p "$CI_WORKSPACE" "$CHECKS_CACHE_DIR"
+          cd "$CI_WORKSPACE"
+          export CARGO_HOME="$CHECKS_CACHE_DIR/cargo" CARGO_TARGET_DIR="$CHECKS_CACHE_DIR/target"
+
+          git init -q .
+          git remote add origin "$FORGEJO_SERVER_URL/$FORGEJO_REPOSITORY.git"
+          git fetch -q --depth 1 origin "$FORGEJO_REF_NAME"
+          git checkout -q "$FORGEJO_SHA"
+          git submodule update --init --recursive --quiet
+
+          . ci/rust-env.sh
+
+          step bun install --frozen-lockfile
+          step bun run test:rust
+          step bun run ci/cache.ts save

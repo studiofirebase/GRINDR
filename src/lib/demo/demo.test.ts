@@ -1,0 +1,613 @@
+import { describe, expect, it } from "vitest";
+import z from "zod";
+
+import { demoRoute } from "$lib/demo";
+import { demoMeProfileId } from "$lib/demo/config";
+import { cascadeV4ResponseSchema } from "$lib/model/browse/grid/cascade/response/v4";
+import { FilterPosition } from "$lib/model/browse/grid/filters";
+import { searchProfileSchema } from "$lib/model/browse/grid/search";
+import { tapProfileSchema } from "$lib/model/interest/tap-profile";
+import {
+	viewerProfileSchema,
+	viewPreviewSchema,
+} from "$lib/model/interest/views";
+import {
+	albumContentSchema,
+	albumDetailsSchema,
+	albumMinSchema,
+} from "$lib/model/messaging/albums";
+import {
+	conversationEntrySchema,
+	fullConversationSchema,
+} from "$lib/model/messaging/conversations";
+import { previewLabel } from "$lib/model/messaging/message-preview";
+import {
+	apiResponseMessageSchema,
+	expiringImageMessageSchema,
+} from "$lib/model/messaging/messages";
+import { gendersSchema } from "$lib/model/users/genders";
+import {
+	profileRightNowSchema,
+	profileSchema,
+	profileShortSchema,
+} from "$lib/model/users/profiles";
+import { pronounsSchema } from "$lib/model/users/pronouns";
+import { profileTagsResponseSchema } from "$lib/model/users/tags";
+import type { InboxFilterRequest } from "$lib/api/messaging/conversations";
+
+const shortProfileSchema = z.object({
+	...profileShortSchema.shape,
+	...profileRightNowSchema.shape,
+});
+
+const route = (path: string, method = "GET", body?: unknown) =>
+	demoRoute({ path, method, body }).body;
+
+describe("demo route data matches the real schemas", () => {
+	const firstProfileId = (
+		items: z.infer<typeof cascadeV4ResponseSchema>["items"],
+	): number => {
+		for (const item of items) {
+			if ("data" in item && "profileId" in item.data)
+				return item.data.profileId;
+		}
+		throw new Error("no profile item");
+	};
+
+	it("cascade grid page validates and paginates", () => {
+		const page0 = cascadeV4ResponseSchema.parse(
+			route("/v4/cascade?nearbyGeoHash=u00"),
+		);
+		expect(page0.items.length).toBeGreaterThan(0);
+		expect(page0.nextPage).toBe(1);
+
+		const page1 = cascadeV4ResponseSchema.parse(
+			route("/v4/cascade?nearbyGeoHash=u00&pageNumber=1"),
+		);
+		expect(firstProfileId(page0.items)).not.toBe(
+			firstProfileId(page1.items),
+		);
+	});
+
+	it("a fresh cascade lists only profiles the profile route marks as new", () => {
+		const newFlags = (query: string) => {
+			const { items } = cascadeV4ResponseSchema.parse(
+				route(`/v4/cascade?nearbyGeoHash=u00${query}`),
+			);
+			const { profiles } = route("/v3/profiles", "POST", {
+				targetProfileIds: items.flatMap((item) =>
+					"data" in item && "profileId" in item.data
+						? [item.data.profileId]
+						: [],
+				),
+			}) as { profiles: { isNew: boolean }[] };
+			return profiles.map((profile) => profile.isNew);
+		};
+
+		expect(newFlags("")).toContain(false);
+		expect(new Set(newFlags("&fresh=true"))).toEqual(new Set([true]));
+	});
+
+	it("full profile validates for an arbitrary id", () => {
+		const body = route("/v7/profiles/100123") as { profiles: unknown[] };
+		profileSchema.parse(body.profiles[0]);
+	});
+
+	it("profile batch validates", () => {
+		const body = route("/v3/profiles", "POST", {
+			targetProfileIds: [100001, 100002, 100250],
+		}) as { profiles: unknown[] };
+		expect(body.profiles).toHaveLength(3);
+		for (const profile of body.profiles) shortProfileSchema.parse(profile);
+	});
+
+	it("own profile + uploaded photos validate", () => {
+		const me = route(`/v7/profiles/${demoMeProfileId}`) as {
+			profiles: unknown[];
+		};
+		profileSchema.parse(me.profiles[0]);
+		z.object({
+			medias: z.array(
+				z.object({
+					mediaHash: z.hex().length(40),
+					type: z.number(),
+					state: z.number(),
+				}),
+			),
+		}).parse(route("/v3.1/me/profile/images"));
+	});
+
+	it("search validates", () => {
+		const body = route("/v7/search?nearbyGeoHash=u00") as {
+			profiles: unknown[];
+		};
+		for (const profile of body.profiles) searchProfileSchema.parse(profile);
+	});
+
+	it("conversations are sorted by last activity and previews are correct", () => {
+		const body = route("/v4/inbox?page=1", "POST") as {
+			entries: unknown[];
+		};
+		const entries = z.array(fullConversationSchema).parse(body.entries);
+		const times = entries.map((e) => e.data.lastActivityTimestamp);
+		expect(times).toEqual([...times].sort((a, b) => b - a));
+		const albumConv = entries.find((e) => e.data.preview?.type === "Album");
+		expect(albumConv?.data.preview?.albumId).not.toBeNull();
+		expect(previewLabel(albumConv?.data.preview ?? null)).toBe("Album");
+	});
+
+	it("conversation messages validate and align with the preview", () => {
+		const inbox = route("/v4/inbox?page=1", "POST") as {
+			entries: {
+				data: {
+					conversationId: string;
+					preview: { text: string | null };
+				};
+			}[];
+		};
+		for (const entry of inbox.entries) {
+			const id = entry.data.conversationId;
+			const body = route(
+				`/v5/chat/conversation/${id}/message?profile=true`,
+			) as { messages: unknown[]; lastReadTimestamp: number | null };
+			const messages = z
+				.array(apiResponseMessageSchema)
+				.parse(body.messages);
+			const [newest] = messages;
+			const oldest = messages.at(-1);
+			if (!newest || !oldest) throw new Error(`no messages in ${id}`);
+			expect(newest.timestamp).toBeGreaterThanOrEqual(oldest.timestamp);
+		}
+	});
+
+	const albumResponseSchema = z.object({
+		...albumMinSchema.shape,
+		...albumDetailsSchema.shape,
+		content: z.array(
+			z.object({
+				...albumContentSchema.shape,
+				remainingViews: z.int().optional(),
+			}),
+		),
+	});
+
+	it("album and expiring-image messages resolve to valid content", () => {
+		const inbox = route("/v4/inbox?page=1", "POST") as {
+			entries: { data: { conversationId: string } }[];
+		};
+		let albums = 0;
+		let expiringImages = 0;
+		for (const entry of inbox.entries) {
+			const id = entry.data.conversationId;
+			const body = route(
+				`/v5/chat/conversation/${id}/message?profile=true`,
+			) as { messages: unknown[] };
+			const messages = z
+				.array(apiResponseMessageSchema)
+				.parse(body.messages);
+			for (const message of messages) {
+				if (
+					message.type === "Album" ||
+					message.type === "ExpiringAlbum" ||
+					message.type === "ExpiringAlbumV2"
+				) {
+					albums++;
+					const album = albumResponseSchema.parse(
+						route(`/v2/albums/${message.body.albumId}`),
+					);
+					expect(album.content.length).toBeGreaterThan(0);
+					const holds = (kind: string) =>
+						album.content.some((item) =>
+							item.contentType.startsWith(`${kind}/`),
+						);
+					expect({
+						hasPhoto: message.body.hasPhoto,
+						hasVideo: message.body.hasVideo,
+					}).toEqual({
+						hasPhoto: holds("image"),
+						hasVideo: holds("video"),
+					});
+				} else if (message.type === "ExpiringImage") {
+					expiringImages++;
+					const single = expiringImageMessageSchema.parse(
+						(
+							route(
+								`/v4/chat/conversation/${id}/message/${message.messageId}`,
+							) as { message: unknown }
+						).message,
+					);
+					if (message.body.viewsRemaining !== 0) {
+						expect(single.body.url).not.toBeNull();
+					}
+				}
+			}
+		}
+		expect(albums).toBeGreaterThan(0);
+		expect(expiringImages).toBeGreaterThan(0);
+	});
+
+	it("refreshes the requested messages of a demo thread", () => {
+		const inbox = route("/v4/inbox?page=1", "POST") as {
+			entries: { data: { conversationId: string } }[];
+		};
+		const id = inbox.entries[0]!.data.conversationId;
+		const thread = z
+			.array(apiResponseMessageSchema)
+			.parse(
+				(
+					route(
+						`/v5/chat/conversation/${id}/message?profile=true`,
+					) as { messages: unknown[] }
+				).messages,
+			);
+		const wanted = thread.slice(0, 2).map((m) => m.messageId);
+
+		const refreshed = z
+			.object({ messages: z.array(apiResponseMessageSchema) })
+			.parse(
+				route(`/v4/chat/conversation/${id}/message-by-id`, "POST", {
+					messageIds: [...wanted, "missing"],
+				}),
+			);
+
+		expect(refreshed.messages.map((m) => m.messageId)).toEqual(wanted);
+	});
+
+	it("paginated message requests are empty", () => {
+		const body = route(
+			"/v5/chat/conversation/100000:100001/message?profile=true&pageKey=x",
+		) as { messages: unknown[] };
+		expect(body.messages).toHaveLength(0);
+	});
+
+	it("sending a message echoes a valid message", () => {
+		const body = route("/v4/chat/message/send", "POST", {
+			type: "Text",
+			target: { type: "Direct", targetId: 100001 },
+			body: { text: "hi" },
+		});
+		apiResponseMessageSchema.parse(body);
+	});
+
+	it("sending media echoes it back under the type it was sent as", () => {
+		const send = (type: string, body: unknown) =>
+			apiResponseMessageSchema.parse(
+				route("/v4/chat/message/send", "POST", {
+					type,
+					target: { type: "Direct", targetId: 100001 },
+					body,
+				}),
+			);
+
+		expect(send("Image", { mediaId: 800_001 }).type).toBe("Image");
+		expect(
+			send("ExpiringImage", { mediaId: 800_001, expiring: true }).type,
+		).toBe("ExpiringImage");
+	});
+
+	it("taps and views validate", () => {
+		const taps = route("/v2/taps/received") as { profiles: unknown[] };
+		for (const tap of taps.profiles) tapProfileSchema.parse(tap);
+
+		const views = route("/v7/views/list") as {
+			profiles: unknown[];
+			previews: unknown[];
+		};
+		for (const profile of views.profiles)
+			viewerProfileSchema.parse(profile);
+		for (const preview of views.previews) viewPreviewSchema.parse(preview);
+	});
+
+	it("reference data validates and mutations are accepted no-ops", () => {
+		gendersSchema.parse(route("/public/v2/genders"));
+		pronounsSchema.parse(route("/v1/pronouns"));
+		profileTagsResponseSchema.parse(route("/v1/tags"));
+		expect(
+			demoRoute({
+				path: "/v4/me/profile",
+				method: "PATCH",
+				body: { aboutMe: "x" },
+			}).status,
+		).toBe(200);
+		expect(
+			demoRoute({
+				path: "/v3/me/blocks/100001",
+				method: "POST",
+				body: undefined,
+			}).status,
+		).toBe(200);
+		expect(
+			demoRoute({
+				path: "/v3/me/favorites/100001",
+				method: "POST",
+				body: undefined,
+			}).status,
+		).toBe(200);
+	});
+
+	it("conversation pin/mute/delete mutations persist across inbox fetches", () => {
+		const inbox = () => {
+			const body = route("/v4/inbox?page=1", "POST") as {
+				entries: unknown[];
+			};
+			return z.array(fullConversationSchema).parse(body.entries);
+		};
+		const [first, second, third] = inbox();
+		if (!first || !second || !third)
+			throw new Error(
+				"the demo inbox has fewer than three conversations",
+			);
+
+		route(
+			`/v4/chat/conversation/${first.data.conversationId}/${first.data.pinned ? "unpin" : "pin"}`,
+			"POST",
+		);
+		route(
+			`/v1/push/conversation/${second.data.conversationId}/${second.data.muted ? "unmute" : "mute"}`,
+			"POST",
+		);
+		route(`/v4/chat/conversation/${third.data.conversationId}`, "DELETE");
+
+		const after = inbox();
+		expect(
+			after.find(
+				(e) => e.data.conversationId === first.data.conversationId,
+			)?.data.pinned,
+		).toBe(!first.data.pinned);
+		expect(
+			after.find(
+				(e) => e.data.conversationId === second.data.conversationId,
+			)?.data.muted,
+		).toBe(!second.data.muted);
+		expect(
+			after.some(
+				(e) => e.data.conversationId === third.data.conversationId,
+			),
+		).toBe(false);
+	});
+
+	it("favorite mutations persist across inbox and profile fetches", () => {
+		const inbox = () => {
+			const body = route("/v4/inbox?page=1", "POST") as {
+				entries: unknown[];
+			};
+			return z.array(fullConversationSchema).parse(body.entries);
+		};
+		const starred = inbox().find((entry) => entry.data.favorite);
+		if (!starred)
+			throw new Error("the demo inbox has no favorited conversation");
+		const profileId = starred.data.participants[0]?.profileId;
+		if (!profileId)
+			throw new Error("the favorited conversation has no participant");
+
+		route(`/v3/me/favorites/${profileId}`, "DELETE");
+
+		const conversationAfter = inbox().find(
+			(entry) =>
+				entry.data.conversationId === starred.data.conversationId,
+		);
+		expect(conversationAfter?.data.favorite).toBe(false);
+		const profileAfter = route(`/v7/profiles/${profileId}`, "GET") as {
+			profiles: { isFavorite: boolean }[];
+		};
+		expect(profileAfter.profiles[0]?.isFavorite).toBe(false);
+
+		route(`/v3/me/favorites/${profileId}`, "POST");
+		expect(
+			inbox().find(
+				(entry) =>
+					entry.data.conversationId === starred.data.conversationId,
+			)?.data.favorite,
+		).toBe(true);
+	});
+
+	it("lists hides out of the order they were hidden in, like Grindr", () => {
+		const hiddenIds = [100901, 100902, 100903];
+		const listedIds = () =>
+			(
+				route("/v1/hides") as { hides: { profileId: number }[] }
+			).hides.map(({ profileId }) => profileId);
+
+		for (const profileId of hiddenIds)
+			route(`/v1/me/hides/${profileId}`, "POST");
+		const listed = listedIds();
+		for (const profileId of hiddenIds)
+			route(`/v1/hides/${profileId}`, "DELETE");
+
+		expect(listed.toSorted((a, b) => a - b)).toEqual(hiddenIds);
+		expect(listed).not.toEqual(hiddenIds);
+		expect(listed).not.toEqual(hiddenIds.toReversed());
+		expect(listedIds()).toEqual([]);
+	});
+
+	it("keeps every conversation peer's profile favorite in agreement with its row", () => {
+		const body = route("/v4/inbox?page=1", "POST") as {
+			entries: unknown[];
+		};
+		const entries = z.array(fullConversationSchema).parse(body.entries);
+		expect(entries.length).toBeGreaterThan(0);
+
+		for (const entry of entries) {
+			const profileId = entry.data.participants[0]?.profileId;
+			const profile = (
+				route(`/v7/profiles/${profileId}`, "GET") as {
+					profiles: { isFavorite: boolean }[];
+				}
+			).profiles[0];
+			expect(
+				profile?.isFavorite,
+				`profile ${profileId} vs its conversation row`,
+			).toBe(entry.data.favorite);
+		}
+	});
+
+	it("filters the inbox server-side when the body asks for favorites only", () => {
+		const body = route("/v4/inbox?page=1", "POST", {
+			favoritesOnly: true,
+		}) as { entries: unknown[] };
+		const entries = z.array(fullConversationSchema).parse(body.entries);
+
+		expect(entries.length).toBeGreaterThan(0);
+		expect(entries.every((entry) => entry.data.favorite)).toBe(true);
+	});
+
+	describe("the inbox filter body", () => {
+		const inboxEntries = (filters?: Partial<InboxFilterRequest>) => {
+			const body = route("/v4/inbox?page=1", "POST", filters) as {
+				entries: unknown[];
+			};
+			return z.array(conversationEntrySchema).parse(body.entries);
+		};
+		const inboxIds = (filters?: Partial<InboxFilterRequest>): string[] =>
+			inboxEntries(filters).map((entry) => entry.data.conversationId);
+		const conversationWith = (profileId: number) =>
+			`${profileId}:${demoMeProfileId}`;
+		const theo = conversationWith(100006);
+		const james = conversationWith(100001);
+		const jack = conversationWith(100250);
+		const henry = conversationWith(100009);
+		const pablo = conversationWith(100777);
+		const bear = conversationWith(100002);
+
+		const expectMatches = ({
+			filters,
+			matches,
+		}: {
+			filters: Partial<InboxFilterRequest>;
+			matches: string[];
+		}) => {
+			const unfiltered = inboxIds();
+			const undeleted = matches.filter((id) => unfiltered.includes(id));
+			expect(undeleted.length).toBeGreaterThan(0);
+			expect(unfiltered.length).toBeGreaterThan(undeleted.length);
+			expect(inboxIds(filters).toSorted()).toEqual(undeleted.toSorted());
+		};
+
+		it("returns every conversation for an all-default body", () => {
+			const unfiltered = inboxIds();
+			expect(unfiltered.length).toBeGreaterThan(0);
+			expect(
+				inboxIds({
+					unreadOnly: false,
+					chemistryOnly: false,
+					favoritesOnly: false,
+					rightNowOnly: false,
+					onlineNowOnly: false,
+					distanceMeters: null,
+					positions: [],
+				}),
+			).toEqual(unfiltered);
+		});
+
+		it("keeps only conversations with unread messages", () => {
+			expectMatches({
+				filters: { unreadOnly: true },
+				matches: [theo, james, pablo],
+			});
+		});
+
+		it("keeps only conversations whose peer is online now", () => {
+			expectMatches({
+				filters: { onlineNowOnly: true },
+				matches: [jack],
+			});
+		});
+
+		it("keeps only conversations whose peer is right now active", () => {
+			expectMatches({ filters: { rightNowOnly: true }, matches: [theo] });
+		});
+
+		it("keeps only conversations with dating potential", () => {
+			expectMatches({
+				filters: { chemistryOnly: true },
+				matches: [henry],
+			});
+		});
+
+		it("treats distanceMeters as an inclusive maximum", () => {
+			expectMatches({
+				filters: { distanceMeters: 9_300 },
+				matches: [james, bear, theo, pablo, henry],
+			});
+			expectMatches({
+				filters: { distanceMeters: 9_299 },
+				matches: [james, bear, theo, pablo],
+			});
+		});
+
+		it("matches positions, counting an unstated position as -1", () => {
+			expectMatches({
+				filters: { positions: [FilterPosition.Side] },
+				matches: [james, henry],
+			});
+			expectMatches({
+				filters: {
+					positions: [
+						FilterPosition.NotSpecified,
+						FilterPosition.Side,
+					],
+				},
+				matches: [theo, james, henry],
+			});
+		});
+
+		it("intersects filters instead of unioning them", () => {
+			const unread = inboxIds({ unreadOnly: true });
+			const sides = inboxIds({ positions: [FilterPosition.Side] });
+			const both = inboxIds({
+				unreadOnly: true,
+				positions: [FilterPosition.Side],
+			});
+
+			expect(both).toEqual([james]);
+			expect(both).toEqual(unread.filter((id) => sides.includes(id)));
+			expect(unread.length).toBeGreaterThan(both.length);
+			expect(sides.length).toBeGreaterThan(both.length);
+		});
+
+		it("gates results past the free allowance into partial entries", () => {
+			const entries = inboxEntries({ distanceMeters: 9_300 });
+
+			expect(entries.length).toBeGreaterThan(2);
+			expect(entries.map((entry) => entry.type)).toEqual([
+				"full_conversation_v1",
+				"full_conversation_v1",
+				...entries.slice(2).map(() => "partial_conversation_v1"),
+			]);
+		});
+
+		it("leaves the flags a partial entry omits out of the payload", () => {
+			const body = route("/v4/inbox?page=1", "POST", {
+				distanceMeters: 9_300,
+			}) as {
+				entries: { type: string; data: Record<string, unknown> }[];
+			};
+			const partial = body.entries.find(
+				(entry) => entry.type === "partial_conversation_v1",
+			);
+
+			expect(partial).toBeDefined();
+			expect(Object.keys(partial?.data ?? {}).toSorted()).toEqual([
+				"conversationId",
+				"lastActivityTimestamp",
+				"name",
+				"participants",
+				"preview",
+				"unreadCount",
+			]);
+		});
+
+		it("gates nothing until one of the paid filters is set", () => {
+			const unfiltered = inboxEntries();
+			const unread = inboxEntries({ unreadOnly: true });
+
+			expect(unfiltered.length).toBeGreaterThan(2);
+			expect(unread.length).toBeGreaterThan(0);
+			expect(
+				[...unfiltered, ...unread].every(
+					(entry) => entry.type === "full_conversation_v1",
+				),
+			).toBe(true);
+		});
+	});
+});

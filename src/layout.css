@@ -1,0 +1,902 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn-svelte/tailwind.css";
+
+@custom-variant dark (&:is(.dark *));
+@custom-variant hover (&:hover:where([data-hover-pointer] *));
+@custom-variant can-hover (&:where([data-hover-pointer] *));
+
+:root {
+	--radius: 1rem;
+	--background: oklch(0.145 0 0);
+	--foreground: oklch(0.985 0 0);
+	--card: oklch(0.205 0 0);
+	--card-foreground: oklch(0.985 0 0);
+	--popover: oklch(0.205 0 0);
+	--popover-foreground: oklch(0.985 0 0);
+	--primary: oklch(86.521% 0.17664 90.372);
+	--primary-foreground: oklch(0.421 0.095 57.708);
+	--secondary: oklch(0.274 0.006 286.033);
+	--secondary-foreground: oklch(0.985 0 0);
+	--muted: oklch(0.269 0 0);
+	--muted-foreground: oklch(0.708 0 0);
+	--accent: oklch(86.521% 0.17664 90.372);
+	--accent-foreground: oklch(0.421 0.095 57.708);
+	--destructive: oklch(0.704 0.191 22.216);
+	--border: oklch(1 0 0 / 10%);
+	--input: oklch(1 0 0 / 15%);
+	--ring: oklch(0.556 0 0);
+	--chart-1: oklch(0.905 0.182 98.111);
+	--chart-2: oklch(86.521% 0.17664 90.372);
+	--chart-3: oklch(0.681 0.162 75.834);
+	--chart-4: oklch(0.554 0.135 66.442);
+	--chart-5: oklch(0.476 0.114 61.907);
+	--sidebar: oklch(0.205 0 0);
+	--sidebar-foreground: oklch(0.985 0 0);
+	--sidebar-primary: oklch(86.521% 0.17664 90.372);
+	--sidebar-primary-foreground: oklch(0.987 0.026 102.212);
+	--sidebar-accent: oklch(0.269 0 0);
+	--sidebar-accent-foreground: oklch(0.985 0 0);
+	--sidebar-border: oklch(1 0 0 / 10%);
+	--sidebar-ring: oklch(0.556 0 0);
+	--message-bubble-in: oklch(0.7882 0.1455 228.36);
+	--message-bubble-out: oklch(0.8618 0.1973 89.76);
+	--stack-scrim: 0.8;
+	--stack-edge: -1px 0 0 oklch(1 0 0 / 10%);
+	--list-rail: 117px;
+	--safe-area-top: 0px;
+	--safe-area-bottom: 0px;
+	--safe-area-left: 0px;
+	--safe-area-right: 0px;
+}
+
+@theme inline {
+	--font-sans: "IBM Plex Sans Variable", sans-serif;
+	--font-heading: "IBM Plex Sans Variable", sans-serif;
+	--color-sidebar-ring: var(--sidebar-ring);
+	--color-sidebar-border: var(--sidebar-border);
+	--color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+	--color-sidebar-accent: var(--sidebar-accent);
+	--color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+	--color-sidebar-primary: var(--sidebar-primary);
+	--color-sidebar-foreground: var(--sidebar-foreground);
+	--color-sidebar: var(--sidebar);
+	--color-chart-5: var(--chart-5);
+	--color-chart-4: var(--chart-4);
+	--color-chart-3: var(--chart-3);
+	--color-chart-2: var(--chart-2);
+	--color-chart-1: var(--chart-1);
+	--color-ring: var(--ring);
+	--color-input: var(--input);
+	--color-border: var(--border);
+	--color-destructive: var(--destructive);
+	--color-accent-foreground: var(--accent-foreground);
+	--color-accent: var(--accent);
+	--color-muted-foreground: var(--muted-foreground);
+	--color-muted: var(--muted);
+	--color-secondary-foreground: var(--secondary-foreground);
+	--color-secondary: var(--secondary);
+	--color-primary-foreground: var(--primary-foreground);
+	--color-primary: var(--primary);
+	--color-popover-foreground: var(--popover-foreground);
+	--color-popover: var(--popover);
+	--color-card-foreground: var(--card-foreground);
+	--color-card: var(--card);
+	--color-foreground: var(--foreground);
+	--color-background: var(--background);
+	--color-message-bubble-in: var(--message-bubble-in);
+	--color-message-bubble-out: var(--message-bubble-out);
+	--radius-sm: calc(var(--radius) * 0.6);
+	--radius-md: calc(var(--radius) * 0.8);
+	--radius-lg: var(--radius);
+	--radius-xl: calc(var(--radius) * 1.4);
+	--radius-2xl: calc(var(--radius) * 1.8);
+	--radius-3xl: calc(var(--radius) * 2.2);
+	--radius-4xl: calc(var(--radius) * 2.6);
+
+	--container-row: 9rem;
+
+	--text-2xs: 0.6875rem; /* 11px */
+	--text-3xs: 0.625rem; /* 10px */
+
+	--spacing-avatar: 37.5px;
+	--spacing-list-rail: var(--list-rail);
+}
+
+/* Keep in sync with src/lib/util/breakpoints.svelte.ts */
+@theme {
+	--breakpoint-split: 560px;
+	--breakpoint-settings-dialog: 424px;
+	--breakpoint-selection-bar-compact: 350px;
+	--breakpoint-selection-bar-collapse: 300px;
+	--breakpoint-cramped: 250px;
+}
+
+@theme {
+	--container-media-panel: 50rem;
+}
+
+@theme {
+	--z-index-modal: 130000;
+	--z-index-drop: 135000;
+	--z-index-toast: 140000;
+	--z-index-popover: 145000;
+	--z-index-safe-area: 150000;
+}
+
+@theme {
+	--radius-grid: 17px;
+
+	--radius-composer: 22px;
+
+	--radius-chat-panel: 30px;
+
+	--spacing-count-badge: 5.5px;
+
+	/* elbow that joins a quoted reply to the message replying to it */
+	--radius-quote-connector: 8px;
+
+	/* overlap that seams an SVG message tail onto its bubble */
+	--spacing-hairline: 0.5px;
+
+	--border-width-hairline: 0.5px;
+}
+
+/* .photo-grid column-count thresholds, queried against the nearest
+   @container/photo-grid ancestor. Values are the former viewport breakpoints
+   (360/640/768/1024/1280) minus 2rem page padding (p-4) so full-page grids
+   keep the same column counts (modulo a classic scrollbar's width, which
+   viewport queries included but a container's content box does not). */
+@theme {
+	--container-grid3: 328px;
+	--container-grid4: 608px;
+	--container-grid5: 736px;
+	--container-grid6: 992px;
+	--container-grid7: 1248px;
+}
+
+@theme {
+	--container-gif2: 200px;
+	--container-gif3: 320px;
+	--container-gaymoji4: 240px;
+	--container-gaymoji5: 320px;
+	--container-gaymoji6: 448px;
+	--container-gaymoji7: 560px;
+	--container-gaymoji8: 672px;
+}
+
+@layer base {
+	* {
+		@apply border-border outline-ring/50;
+	}
+	body {
+		@apply bg-background text-foreground;
+	}
+	html {
+		@apply font-sans;
+	}
+}
+
+:root,
+body {
+	min-height: 100dvh;
+	/* No app-level rubber-banding; scroll containers opt back in via
+	   overscroll-behavior: contain for pull-to-refresh. */
+	overscroll-behavior: none;
+	user-select: none;
+	-webkit-user-select: none;
+	--nav-height: 4rem;
+	--slider-thumb-size: 1.5rem;
+	--selection-bar-height: 4.75rem;
+	--content-pb: calc(var(--nav-height) + var(--safe-area-bottom));
+	--screen-safe: calc(
+		100dvh - var(--safe-area-top) - var(--safe-area-bottom)
+	);
+	/* Runs under the bottom navbar; pair with -mb-(--content-pb) and
+	   pb-nav-clear so content scrolls beneath the navbar's blur. */
+	--screen-nav: calc(100dvh - var(--safe-area-top));
+	text-rendering: geometricPrecision;
+	image-rendering: optimizeQuality;
+	shape-rendering: geometricPrecision;
+}
+
+a {
+	-webkit-user-drag: none;
+}
+
+[class^="scroll-lock-"] {
+	overflow: hidden;
+}
+
+:root[data-context-menu-open] body {
+	pointer-events: none !important;
+}
+
+.profile-card-distance {
+	@apply text-2xs font-medium tracking-tight text-white/85;
+	text-shadow:
+		0px 1px 1px rgba(0, 0, 0, 0.2),
+		0px 0px 2px rgba(0, 0, 0, 0.2);
+}
+
+@layer components {
+	.scrollbar-thin {
+		scrollbar-width: thin;
+	}
+
+	/* Requires an ancestor with @container/photo-grid — columns follow that container's width, not the viewport.
+	   Only cells may be direct children because corner rules apply based on position. */
+	.photo-grid {
+		@apply mx-auto grid w-full max-w-400 flex-1 grid-cols-2 content-start gap-0.5 overflow-clip rounded-grid;
+
+		--grid-radius-top: var(--radius-grid);
+		--grid-radius-bottom: var(--radius-grid);
+		--photo-grid-aspect: 1 / 1;
+
+		> :first-child {
+			border-top-left-radius: var(--grid-radius-top);
+		}
+		> :last-child {
+			border-bottom-right-radius: var(--grid-radius-bottom);
+		}
+	}
+
+	.photo-grid[data-rows-above] {
+		--grid-radius-top: 0px;
+	}
+	.photo-grid[data-rows-below] {
+		--grid-radius-bottom: 0px;
+	}
+
+	/* Each band repeats its column count four times: grid-cols-N and three N's in the selectors.
+	   e2e/photo-grid-corners.spec.ts asserts the resolved count and all four corners in every band */
+	@container photo-grid (width < theme(--container-grid3)) {
+		.photo-grid {
+			@apply grid-cols-2;
+
+			> :nth-child(2),
+			> :last-child:nth-child(-n + 2) {
+				border-top-right-radius: var(--grid-radius-top);
+			}
+			> :nth-child(2n + 1):nth-last-child(-n + 2) {
+				border-bottom-left-radius: var(--grid-radius-bottom);
+			}
+		}
+	}
+	@container photo-grid (width >= theme(--container-grid3)) and (width < theme(--container-grid4)) {
+		.photo-grid {
+			@apply grid-cols-3;
+
+			> :nth-child(3),
+			> :last-child:nth-child(-n + 3) {
+				border-top-right-radius: var(--grid-radius-top);
+			}
+			> :nth-child(3n + 1):nth-last-child(-n + 3) {
+				border-bottom-left-radius: var(--grid-radius-bottom);
+			}
+		}
+	}
+	@container photo-grid (width >= theme(--container-grid4)) and (width < theme(--container-grid5)) {
+		.photo-grid {
+			@apply grid-cols-4;
+
+			> :nth-child(4),
+			> :last-child:nth-child(-n + 4) {
+				border-top-right-radius: var(--grid-radius-top);
+			}
+			> :nth-child(4n + 1):nth-last-child(-n + 4) {
+				border-bottom-left-radius: var(--grid-radius-bottom);
+			}
+		}
+	}
+	@container photo-grid (width >= theme(--container-grid5)) and (width < theme(--container-grid6)) {
+		.photo-grid {
+			@apply grid-cols-5;
+
+			> :nth-child(5),
+			> :last-child:nth-child(-n + 5) {
+				border-top-right-radius: var(--grid-radius-top);
+			}
+			> :nth-child(5n + 1):nth-last-child(-n + 5) {
+				border-bottom-left-radius: var(--grid-radius-bottom);
+			}
+		}
+	}
+	@container photo-grid (width >= theme(--container-grid6)) and (width < theme(--container-grid7)) {
+		.photo-grid {
+			@apply grid-cols-6;
+
+			> :nth-child(6),
+			> :last-child:nth-child(-n + 6) {
+				border-top-right-radius: var(--grid-radius-top);
+			}
+			> :nth-child(6n + 1):nth-last-child(-n + 6) {
+				border-bottom-left-radius: var(--grid-radius-bottom);
+			}
+		}
+	}
+	@container photo-grid (width >= theme(--container-grid7)) {
+		.photo-grid {
+			@apply grid-cols-7;
+
+			> :nth-child(7),
+			> :last-child:nth-child(-n + 7) {
+				border-top-right-radius: var(--grid-radius-top);
+			}
+			> :nth-child(7n + 1):nth-last-child(-n + 7) {
+				border-bottom-left-radius: var(--grid-radius-bottom);
+			}
+		}
+	}
+}
+
+/* Safe-area / inset layout vocabulary — see --nav-height / --screen-* tokens above */
+:root {
+	--nav-clear: calc(0.75rem + var(--nav-height) + var(--bar-content-gap));
+}
+@utility h-screen-safe {
+	height: var(--screen-safe);
+}
+@utility max-h-screen-safe {
+	max-height: var(--screen-safe);
+}
+@utility pt-fixed-header {
+	padding-top: calc(1rem + var(--safe-area-top));
+}
+@utility pb-fixed-nav {
+	padding-bottom: calc(0.5rem + var(--safe-area-bottom));
+}
+@utility pb-nav-clear {
+	padding-bottom: calc(0.5rem + var(--content-pb) + var(--bar-content-gap));
+}
+@utility pt-header-clear-* {
+	padding-top: calc(--spacing(--value(integer)) + var(--bar-content-gap));
+}
+@utility bottom-nav-clear {
+	bottom: calc(var(--nav-clear) + var(--safe-area-bottom));
+}
+@utility max-h-photo {
+	max-height: min(70vh, 500px);
+}
+
+/* 1px past full height keeps a scroll container technically scrollable, so
+   a native rubber band (and with it pull-to-refresh) works on short content */
+@utility min-h-overscrollable {
+	min-height: calc(
+		100% + 1px - var(--refresh-inset-top, 0px) -
+			var(--refresh-inset-bottom, 0px)
+	);
+	margin-top: var(--refresh-inset-top, 0px);
+	margin-bottom: var(--refresh-inset-bottom, 0px);
+}
+
+@utility screen-nav-host {
+	/* Scroller child needs pull-scroller */
+	/* Content inside needs pb-nav-clear */
+	@apply relative h-(--screen-nav) w-full;
+	margin-bottom: calc(var(--content-pb) * -1);
+}
+
+/* Pull-to-refresh containers */
+@utility pull-scroller {
+	@apply size-full overflow-auto overscroll-contain;
+}
+
+[data-offscreen-skip] {
+	content-visibility: auto;
+	contain-intrinsic-block-size: auto var(--offscreen-block-size);
+}
+
+[data-covered] {
+	content-visibility: hidden;
+}
+
+@supports not (content-visibility: hidden) {
+	[data-covered] {
+		visibility: hidden;
+	}
+}
+
+[data-sonner-toaster] {
+	font-family: var(--font-sans) !important;
+	z-index: var(--z-index-toast) !important;
+	/* bits-ui modal dialogs set body { pointer-events: none }; toasts must stay tappable */
+	pointer-events: auto;
+}
+
+[data-sonner-toaster][data-y-position="bottom"] {
+	transition:
+		transform 400ms ease,
+		bottom 300ms ease-out;
+}
+
+[data-sonner-toaster][data-y-position="bottom"][data-sheet-anchored] {
+	bottom: min(
+		max(var(--offset-bottom), var(--sheet-anchor, 0px)),
+		calc(
+			100dvh - var(--safe-area-top) - 0.5rem -
+				var(--toast-stack-height, 0px)
+		)
+	);
+	transition: transform 400ms ease;
+}
+
+@media (prefers-reduced-motion: reduce) {
+	[data-sonner-toaster][data-y-position="bottom"] {
+		transition: none;
+	}
+}
+
+.toast[data-styled="true"] {
+	background-color: var(--color-accent) !important;
+	color: var(--popover) !important;
+	border-radius: 1.25rem !important;
+	border: 1px solid var(--color-border) !important;
+}
+
+.incoming-message-toast[data-sonner-toast] {
+	opacity: 1 !important;
+	--fly-out: translateY(calc(-100% - var(--offset-top, 24px) - 12px));
+}
+
+@media not (max-width: 600px) {
+	[data-sonner-toast][data-styled="false"] {
+		width: var(--width);
+	}
+}
+
+.incoming-message-toast[data-sonner-toast][data-mounted="false"] {
+	--y: var(--fly-out) !important;
+}
+
+.incoming-message-toast[data-sonner-toast][data-removed="true"] {
+	--y: var(--fly-out) !important;
+	transition: transform 180ms ease-in !important;
+}
+
+.incoming-message-toast[data-sonner-toast][data-swipe-out="true"][data-swipe-direction="up"] {
+	animation-name: incoming-message-toast-swipe-out-up !important;
+}
+
+@keyframes incoming-message-toast-swipe-out-up {
+	from {
+		transform: var(--y) translateY(var(--swipe-amount-y));
+	}
+
+	to {
+		transform: var(--fly-out);
+	}
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.incoming-message-toast[data-sonner-toast] {
+		--fly-out: translateY(0);
+		transition: opacity 180ms ease-out !important;
+	}
+
+	.incoming-message-toast[data-sonner-toast][data-mounted="false"],
+	.incoming-message-toast[data-sonner-toast][data-removed="true"] {
+		opacity: 0 !important;
+		transition: opacity 180ms ease-in !important;
+	}
+
+	.incoming-message-toast[data-sonner-toast][data-swipe-out="true"][data-swipe-direction="up"] {
+		animation: none !important;
+	}
+
+	[class*="animate-in"],
+	[class*="animate-out"] {
+		--tw-enter-translate-x: 0;
+		--tw-enter-translate-y: 0;
+		--tw-enter-scale: 1;
+		--tw-enter-rotate: 0;
+		--tw-exit-translate-x: 0;
+		--tw-exit-translate-y: 0;
+		--tw-exit-scale: 1;
+		--tw-exit-rotate: 0;
+	}
+
+	[data-vaul-drawer] {
+		transition-duration: 0s !important;
+	}
+
+	[data-vaul-drawer][data-vaul-snap-points="false"]:not(
+			[data-vaul-animate="false"]
+		) {
+		animation-name: reduced-motion-fade-in !important;
+	}
+
+	[data-vaul-drawer][data-vaul-snap-points="false"][data-state="closed"]:not(
+			[data-vaul-animate="false"]
+		) {
+		animation-name: reduced-motion-fade-out !important;
+	}
+}
+
+@keyframes reduced-motion-fade-in {
+	from {
+		opacity: 0;
+	}
+}
+
+@keyframes reduced-motion-fade-out {
+	to {
+		opacity: 0;
+	}
+}
+
+@theme {
+	--apple-system-glass-material-clear: -apple-system-glass-material-clear;
+	--apple-system-glass-material-media-controls: -apple-system-glass-material-media-controls;
+	--apple-system-glass-material-media-controls-subdued: -apple-system-glass-material-media-controls-subdued;
+}
+
+@utility glass-* {
+	-apple-visual-effect: --value(--apple-system-glass-material-*);
+}
+
+@utility scrim {
+	background-image: var(--scrim);
+}
+
+@utility media-chip {
+	@apply rounded-full border border-white/10 bg-popover/40 scrim;
+}
+
+@utility media-pill {
+	@apply bg-popover/20 scrim;
+}
+
+/* Backdrop blur: one token map per mode, keyed by data-backdrop-blur on <html>. */
+:root {
+	--bar-content-gap: 0px;
+	--bd-lens: blur(1px);
+	--bd-veil: blur(8px);
+	--bd-rail: blur(16px);
+	--bd-panel: blur(24px);
+	--bd-chip: blur(40px);
+	--pill-frost: url(#frost-pill-40);
+	--chip-frost: url(#frost-tile-6) url(#frost-round-40);
+	--veil-frost: url(#frost-tile-1) url(#frost-round-8);
+	--glass-controls-bg: rgba(0, 0, 0, 0.4);
+	--glass-controls-subdued-bg: rgba(0, 0, 0, 0.2);
+	--scrim: none;
+}
+
+:root[data-backdrop-blur="min"] {
+	--bd-rail: blur(12px);
+	--bd-panel: blur(16px);
+	--bd-chip: blur(24px);
+	--pill-frost: url(#frost-pill-24);
+	--chip-frost: url(#frost-tile-6) url(#frost-round-24);
+	--bar-content-gap: 0.75rem;
+}
+
+:root[data-backdrop-blur="off"] {
+	--bd-lens: none;
+	--bd-veil: none;
+	--bd-rail: none;
+	--bd-panel: none;
+	--bd-chip: none;
+	--apple-system-glass-material-clear: none;
+	--apple-system-glass-material-media-controls: none;
+	--apple-system-glass-material-media-controls-subdued: none;
+	--glass-controls-bg: rgba(0, 0, 0, 0.62);
+	--glass-controls-subdued-bg: rgba(0, 0, 0, 0.42);
+	--scrim: linear-gradient(rgba(0, 0, 0, 0.45), rgba(0, 0, 0, 0.45));
+}
+
+.pblur[data-pblur-direction="bottomToTop"] {
+	--pblur-dir: to bottom;
+}
+
+.pblur[data-pblur-direction="topToBottom"] {
+	--pblur-dir: to top;
+}
+
+.pblur-layer,
+.pblur-scrim {
+	position: absolute;
+	top: 0;
+	left: 0;
+	width: 100%;
+	height: 100%;
+}
+
+.pblur-scrim {
+	display: none;
+	z-index: 10;
+}
+
+.pblur-layer {
+	display: block;
+	backdrop-filter: var(--pblur-blur);
+	-webkit-mask-image: linear-gradient(var(--pblur-dir), var(--pblur-stops));
+	mask-image: linear-gradient(var(--pblur-dir), var(--pblur-stops));
+}
+
+.pblur-layer[data-pblur-layer="0"] {
+	--pblur-blur: blur(1px);
+	--pblur-stops:
+		rgba(0, 0, 0, 0) 0%, rgba(0, 0, 0, 1) 10%, rgba(0, 0, 0, 1) 30%,
+		rgba(0, 0, 0, 0) 40%;
+}
+.pblur-layer[data-pblur-layer="1"] {
+	--pblur-blur: blur(2px);
+	--pblur-stops:
+		rgba(0, 0, 0, 0) 10%, rgba(0, 0, 0, 1) 20%, rgba(0, 0, 0, 1) 40%,
+		rgba(0, 0, 0, 0) 50%;
+}
+.pblur-layer[data-pblur-layer="2"] {
+	--pblur-blur: blur(4px);
+	--pblur-stops:
+		rgba(0, 0, 0, 0) 15%, rgba(0, 0, 0, 1) 30%, rgba(0, 0, 0, 1) 50%,
+		rgba(0, 0, 0, 0) 60%;
+}
+.pblur-layer[data-pblur-layer="3"] {
+	--pblur-blur: blur(8px);
+	--pblur-stops:
+		rgba(0, 0, 0, 0) 20%, rgba(0, 0, 0, 1) 40%, rgba(0, 0, 0, 1) 60%,
+		rgba(0, 0, 0, 0) 70%;
+}
+.pblur-layer[data-pblur-layer="4"] {
+	--pblur-blur: blur(12px);
+	--pblur-stops:
+		rgba(0, 0, 0, 0) 30%, rgba(0, 0, 0, 1) 50%, rgba(0, 0, 0, 1) 70%,
+		rgba(0, 0, 0, 0) 80%;
+}
+.pblur-layer[data-pblur-layer="5"] {
+	--pblur-blur: blur(16px);
+	--pblur-stops:
+		rgba(0, 0, 0, 0) 40%, rgba(0, 0, 0, 1) 60%, rgba(0, 0, 0, 1) 80%,
+		rgba(0, 0, 0, 0) 90%;
+}
+.pblur-layer[data-pblur-layer="6"] {
+	--pblur-blur: blur(24px);
+	--pblur-stops:
+		rgba(0, 0, 0, 0) 50%, rgba(0, 0, 0, 1) 70%, rgba(0, 0, 0, 1) 90%,
+		rgba(0, 0, 0, 0) 100%;
+}
+.pblur-layer[data-pblur-layer="7"] {
+	--pblur-blur: blur(32px);
+	--pblur-stops: rgba(0, 0, 0, 0) 60%, rgba(0, 0, 0, 1) 80%;
+}
+.pblur-layer[data-pblur-layer="8"] {
+	--pblur-blur: blur(64px);
+	--pblur-stops: rgba(0, 0, 0, 0) 70%, rgba(0, 0, 0, 1) 100%;
+	z-index: 10;
+}
+
+:root[data-backdrop-blur="medium"] .pblur-layer {
+	display: none;
+}
+:root[data-backdrop-blur="medium"] .pblur-layer[data-pblur-layer="0"] {
+	display: block;
+	--pblur-blur: blur(1px);
+	--pblur-stops: rgba(0, 0, 0, 0) 0%, rgba(0, 0, 0, 1) 10%;
+}
+:root[data-backdrop-blur="medium"] .pblur-layer[data-pblur-layer="1"] {
+	display: block;
+	--pblur-blur: blur(4px);
+	--pblur-stops: rgba(0, 0, 0, 0) 10%, rgba(0, 0, 0, 1) 25%;
+}
+:root[data-backdrop-blur="medium"] .pblur-layer[data-pblur-layer="2"] {
+	display: block;
+	--pblur-blur: blur(10px);
+	--pblur-stops: rgba(0, 0, 0, 0) 20%, rgba(0, 0, 0, 1) 40%;
+}
+:root[data-backdrop-blur="medium"] .pblur-layer[data-pblur-layer="3"] {
+	display: block;
+	--pblur-blur: blur(28px);
+	--pblur-stops: rgba(0, 0, 0, 0) 35%, rgba(0, 0, 0, 1) 65%;
+}
+:root[data-backdrop-blur="medium"] .pblur-layer[data-pblur-layer="4"] {
+	display: block;
+	--pblur-blur: blur(64px);
+	--pblur-stops: rgba(0, 0, 0, 0) 60%, rgba(0, 0, 0, 1) 100%;
+	z-index: 10;
+}
+
+:root[data-backdrop-blur="min"] .pblur-layer {
+	display: none;
+}
+:root[data-backdrop-blur="min"] .pblur-layer[data-pblur-layer="0"] {
+	display: block;
+	--pblur-blur: blur(32px);
+	--pblur-overhang: 4rem;
+	pointer-events: none;
+	z-index: 10;
+}
+
+:root[data-backdrop-blur="min"]
+	.pblur[data-pblur-direction="bottomToTop"]
+	.pblur-layer[data-pblur-layer="0"] {
+	top: calc(-1 * var(--pblur-overhang));
+	height: calc(100% + var(--pblur-overhang));
+	-webkit-mask-image: linear-gradient(
+		to bottom,
+		transparent var(--pblur-overhang),
+		black var(--pblur-overhang)
+	);
+	mask-image: linear-gradient(
+		to bottom,
+		transparent var(--pblur-overhang),
+		black var(--pblur-overhang)
+	);
+}
+:root[data-backdrop-blur="min"]
+	.pblur[data-pblur-direction="topToBottom"]
+	.pblur-layer[data-pblur-layer="0"] {
+	height: calc(100% + var(--pblur-overhang));
+	-webkit-mask-image: linear-gradient(
+		to top,
+		transparent var(--pblur-overhang),
+		black var(--pblur-overhang)
+	);
+	mask-image: linear-gradient(
+		to top,
+		transparent var(--pblur-overhang),
+		black var(--pblur-overhang)
+	);
+}
+:root[data-backdrop-blur="min"] .pblur-bg {
+	background-image: none;
+}
+:root[data-backdrop-blur="min"] .pblur-scrim {
+	display: block;
+	background-color: rgba(0, 0, 0, 0.55);
+}
+:root[data-backdrop-blur="min"]
+	.pblur[data-pblur-direction="bottomToTop"]
+	.pblur-scrim {
+	border-top: 1px solid var(--border);
+}
+:root[data-backdrop-blur="min"]
+	.pblur[data-pblur-direction="topToBottom"]
+	.pblur-scrim {
+	border-bottom: 1px solid var(--border);
+}
+
+:root[data-backdrop-blur="off"] .pblur-layer {
+	display: none;
+}
+:root[data-backdrop-blur="off"] .pblur-bg {
+	-webkit-mask-image: linear-gradient(
+		var(--pblur-dir),
+		rgba(0, 0, 0, 0) 0%,
+		rgba(0, 0, 0, 0.061) 7%,
+		rgba(0, 0, 0, 0.216) 14%,
+		rgba(0, 0, 0, 0.425) 20%,
+		rgba(0, 0, 0, 0.648) 27%,
+		rgba(0, 0, 0, 0.844) 34%,
+		rgba(0, 0, 0, 0.972) 40%,
+		rgba(0, 0, 0, 1) 45%,
+		rgba(0, 0, 0, 1) 100%
+	);
+	mask-image: linear-gradient(
+		var(--pblur-dir),
+		rgba(0, 0, 0, 0) 0%,
+		rgba(0, 0, 0, 0.061) 7%,
+		rgba(0, 0, 0, 0.216) 14%,
+		rgba(0, 0, 0, 0.425) 20%,
+		rgba(0, 0, 0, 0.648) 27%,
+		rgba(0, 0, 0, 0.844) 34%,
+		rgba(0, 0, 0, 0.972) 40%,
+		rgba(0, 0, 0, 1) 45%,
+		rgba(0, 0, 0, 1) 100%
+	);
+}
+:root[data-backdrop-blur="off"] .frost {
+	display: none;
+}
+:root[data-backdrop-blur="off"] .pblur-scrim {
+	display: block;
+	background-image: linear-gradient(
+		var(--pblur-dir),
+		rgba(0, 0, 0, 0) 0%,
+		rgba(0, 0, 0, 0.041) 15%,
+		rgba(0, 0, 0, 0.147) 30%,
+		rgba(0, 0, 0, 0.289) 45%,
+		rgba(0, 0, 0, 0.441) 60%,
+		rgba(0, 0, 0, 0.574) 75%,
+		rgba(0, 0, 0, 0.661) 90%,
+		rgba(0, 0, 0, 0.68) 100%
+	);
+}
+
+.menu-scrim::backdrop {
+	background-color: transparent;
+	backdrop-filter: blur(24px);
+}
+:root[data-backdrop-blur="min"] .menu-scrim::backdrop {
+	backdrop-filter: blur(16px);
+}
+:root[data-backdrop-blur="off"] .menu-scrim::backdrop {
+	background-color: rgba(0, 0, 0, 0.62);
+	backdrop-filter: none;
+}
+
+@supports not (-apple-visual-effect: -apple-system-glass-material) {
+	.glass-clear {
+		backdrop-filter: var(--bd-lens);
+		border: 0.5px solid rgba(255, 255, 255, 0.75);
+		box-shadow:
+			inset 0 0 0px rgba(255, 255, 255, 0.2),
+			inset 4px 0 5px 2px rgba(255, 255, 255, 0.8),
+			inset -3px 0 5px 0px rgba(255, 255, 255, 0.6);
+	}
+	.glass-media-controls {
+		backdrop-filter: var(--bd-veil);
+		background-color: var(--glass-controls-bg);
+	}
+	.glass-media-controls-subdued {
+		backdrop-filter: var(--bd-panel);
+		background-color: var(--glass-controls-subdued-bg);
+		box-shadow:
+			inset 3px 1px 5px rgba(255, 255, 255, 0.05),
+			inset 2px -1px 3px rgba(255, 255, 255, 0.2),
+			inset 1px 1px 5px rgba(0, 0, 0, 0.2);
+	}
+}
+
+@supports not (
+	(-webkit-backdrop-filter: blur(1px)) or (backdrop-filter: blur(1px))
+) {
+	:root:root {
+		--bd-lens: none;
+		--bd-veil: none;
+		--bd-rail: none;
+		--bd-panel: none;
+		--bd-chip: none;
+		--glass-controls-bg: rgba(0, 0, 0, 0.62);
+		--glass-controls-subdued-bg: rgba(0, 0, 0, 0.42);
+		--scrim: linear-gradient(rgba(0, 0, 0, 0.45), rgba(0, 0, 0, 0.45));
+	}
+	:root:root .pblur-layer,
+	:root:root .frost {
+		display: none;
+	}
+	:root:root .pblur-bg {
+		-webkit-mask-image: linear-gradient(
+			var(--pblur-dir),
+			rgba(0, 0, 0, 0) 0%,
+			rgba(0, 0, 0, 0.061) 7%,
+			rgba(0, 0, 0, 0.216) 14%,
+			rgba(0, 0, 0, 0.425) 20%,
+			rgba(0, 0, 0, 0.648) 27%,
+			rgba(0, 0, 0, 0.844) 34%,
+			rgba(0, 0, 0, 0.972) 40%,
+			rgba(0, 0, 0, 1) 45%,
+			rgba(0, 0, 0, 1) 100%
+		);
+		mask-image: linear-gradient(
+			var(--pblur-dir),
+			rgba(0, 0, 0, 0) 0%,
+			rgba(0, 0, 0, 0.061) 7%,
+			rgba(0, 0, 0, 0.216) 14%,
+			rgba(0, 0, 0, 0.425) 20%,
+			rgba(0, 0, 0, 0.648) 27%,
+			rgba(0, 0, 0, 0.844) 34%,
+			rgba(0, 0, 0, 0.972) 40%,
+			rgba(0, 0, 0, 1) 45%,
+			rgba(0, 0, 0, 1) 100%
+		);
+	}
+	:root:root .pblur-scrim {
+		display: block;
+		background-image: linear-gradient(
+			var(--pblur-dir),
+			rgba(0, 0, 0, 0) 0%,
+			rgba(0, 0, 0, 0.041) 15%,
+			rgba(0, 0, 0, 0.147) 30%,
+			rgba(0, 0, 0, 0.289) 45%,
+			rgba(0, 0, 0, 0.441) 60%,
+			rgba(0, 0, 0, 0.574) 75%,
+			rgba(0, 0, 0, 0.661) 90%,
+			rgba(0, 0, 0, 0.68) 100%
+		);
+	}
+	:root:root .menu-scrim::backdrop {
+		background-color: rgba(0, 0, 0, 0.62);
+	}
+}

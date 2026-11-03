@@ -1,0 +1,150 @@
+import z from "zod";
+
+import { mediaUrlSchema } from "$lib/model/media";
+import { knownValueOrNull } from "$lib/model/tolerance";
+import { unixTimestampMsSchema, unmodeledSchema } from "$lib/model/types";
+
+export const albumPreviewSchema = z.object({
+	albumId: z.int(),
+	hasUnseenContent: z.boolean(),
+});
+
+export const albumMinSchema = albumPreviewSchema.extend({
+	albumName: z.string().nullable(),
+	profileId: z.int(),
+	albumViewable: z.boolean(),
+});
+
+export const albumDetailsSchema = z.object({
+	sharedCount: z.int(),
+	createdAt: z.iso.datetime({ local: true }),
+	updatedAt: z.iso.datetime({ local: true }),
+});
+
+export const AlbumExpiration = {
+	INDEFINITE: 0,
+	ONCE: 1,
+	TEN_MINUTES: 2,
+	ONE_HOUR: 3,
+	ONE_DAY: 4,
+} as const;
+
+export const albumExpirationTypeSchema = z.enum(
+	Object.keys(AlbumExpiration) as (keyof typeof AlbumExpiration)[],
+);
+
+export type AlbumExpirationType = z.infer<typeof albumExpirationTypeSchema>;
+
+export const albumExpirationSchema = z.object({
+	expiresAt: unixTimestampMsSchema.nullable(),
+	expirationType: knownValueOrNull({
+		value: albumExpirationTypeSchema,
+		label: "album expirationType",
+	}).optional(),
+});
+
+export const albumContentMin = z.object({
+	contentId: z.int(),
+	contentType: z.string(),
+	coverUrl: mediaUrlSchema.nullable(),
+	statusId: z.int(),
+});
+
+export const albumContentSchema = albumContentMin.extend({
+	thumbUrl: mediaUrlSchema,
+	url: mediaUrlSchema.or(z.literal("")),
+	processing: z.boolean(),
+	rejectionId: unmodeledSchema,
+});
+
+export type AlbumContent = z.infer<typeof albumContentSchema>;
+
+export const albumContentWithHashSchema = albumContentSchema.extend({
+	contentHash: z.string().optional(),
+});
+
+export const myAlbumSchema = albumDetailsSchema.extend({
+	albumId: z.int(),
+	albumName: z.string().nullable(),
+	profileId: z.int(),
+	version: z.int(),
+	content: z.array(albumContentWithHashSchema),
+	isShareable: z.boolean(),
+});
+
+export type MyAlbum = z.infer<typeof myAlbumSchema>;
+
+export const myAlbumsResponseSchema = z.object({
+	albums: z.array(myAlbumSchema),
+});
+
+export const albumShareRequestSchema = z.object({
+	profiles: z.array(
+		z.object({
+			profileId: z.int(),
+			expirationType: albumExpirationTypeSchema,
+		}),
+	),
+});
+
+export type AlbumShareRequest = z.infer<typeof albumShareRequestSchema>;
+
+export const albumSharesResponseSchema = z.object({
+	profileIds: z.array(z.int()),
+});
+
+export const albumUnshareRequestProfileItemSchema = z.object({
+	profileId: z.int(),
+	shareId: z.string(),
+});
+
+export const albumUnshareRequestSchema = z.object({
+	profiles: z.array(albumUnshareRequestProfileItemSchema),
+});
+
+export type AlbumUnshareRequest = z.infer<typeof albumUnshareRequestSchema>;
+
+export const albumNameRequestSchema = z.object({
+	albumName: z.string().max(255).nullable(),
+});
+
+export type AlbumNameRequest = z.infer<typeof albumNameRequestSchema>;
+
+export const albumNameResponseSchema = z.object({
+	albumId: z.int(),
+	albumName: z.string().nullable(),
+});
+
+export const albumContentOrderRequestSchema = z.object({
+	contentIds: z.array(z.int()),
+});
+
+export type AlbumContentOrderRequest = z.infer<
+	typeof albumContentOrderRequestSchema
+>;
+
+export const albumStorageLimitsSchema = z.object({
+	subscriptionType: z.string(),
+	maxAlbums: z.int(),
+	maxContentItemsPerAlbum: z.int(),
+	maxShares: z.int(),
+	maxViewableAlbums: z.int(),
+	maxViewableVideos: z.int(),
+	maxContentSize: z.int(),
+	maxContentSizeHumanReadable: z.string(),
+	maxVideoLength: z.int(),
+	minVideoLength: z.int(),
+	maxShareableAlbums: z.int(),
+	maxVideosPerAlbum: z.int(),
+});
+
+export type AlbumStorageLimits = z.infer<typeof albumStorageLimitsSchema>;
+
+export const albumContentUploadResponseSchema = z.object({
+	contentId: z.int(),
+	contentUrl: z.string().nullable(),
+});
+
+export const albumContentProcessingResponseSchema = z.object({
+	processing: z.boolean(),
+});

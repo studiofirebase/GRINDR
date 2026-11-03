@@ -1,0 +1,359 @@
+use std::fmt;
+
+use serde::Serialize;
+
+use crate::api::push::PushError;
+use crate::api::recaptcha::RecaptchaError;
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BanInfo {
+	pub kind: String,
+	pub code: i32,
+	pub message: String,
+	pub reason: Option<String>,
+	pub sub_reason: Option<String>,
+	pub automated: Option<bool>,
+}
+
+impl From<grindr::BanInfo> for BanInfo {
+	fn from(b: grindr::BanInfo) -> Self {
+		let kind = match b.kind {
+			grindr::BanKind::Profile => "profile",
+			grindr::BanKind::Device => "device",
+			grindr::BanKind::Network => "network",
+			grindr::BanKind::Underage => "underage",
+			_ => "unknown",
+		};
+		Self {
+			kind: kind.to_owned(),
+			code: b.code,
+			message: b.message,
+			reason: b.reason,
+			sub_reason: b.sub_reason,
+			automated: b.automated,
+		}
+	}
+}
+
+#[derive(Debug, Serialize)]
+#[serde(tag = "kind", content = "message")]
+pub enum AppError {
+	Http(String),
+	Connect(String),
+	Auth(String),
+	Media(String),
+	NotSignedIn,
+	SessionStale,
+	Api { code: i32, message: String },
+	Unauthorized { code: i32, message: String },
+	Banned(BanInfo),
+	RateLimited,
+	RequestBlocked,
+	NetworkBlocked,
+	NotInitialized,
+	SessionCleared,
+	ContentTooLarge,
+	Recaptcha(RecaptchaError),
+	Push(PushError),
+}
+
+impl AppError {
+	pub fn kind(&self) -> &'static str {
+		match self {
+			AppError::Http(_) => "Http",
+			AppError::Connect(_) => "Connect",
+			AppError::Auth(_) => "Auth",
+			AppError::Media(_) => "Media",
+			AppError::NotSignedIn => "NotSignedIn",
+			AppError::SessionStale => "SessionStale",
+			AppError::Api { .. } => "Api",
+			AppError::Unauthorized { .. } => "Unauthorized",
+			AppError::Banned(_) => "Banned",
+			AppError::RateLimited => "RateLimited",
+			AppError::RequestBlocked => "RequestBlocked",
+			AppError::NetworkBlocked => "NetworkBlocked",
+			AppError::NotInitialized => "NotInitialized",
+			AppError::SessionCleared => "SessionCleared",
+			AppError::ContentTooLarge => "ContentTooLarge",
+			AppError::Recaptcha(_) => "Recaptcha",
+			AppError::Push(_) => "Push",
+		}
+	}
+}
+
+impl fmt::Display for AppError {
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+		match self {
+			AppError::Http(msg) => write!(f, "HTTP error: {msg}"),
+			AppError::Connect(msg) => write!(f, "Could not connect: {msg}"),
+			AppError::Auth(msg) => write!(f, "Auth error: {msg}"),
+			AppError::Media(msg) => write!(f, "Media error: {msg}"),
+			AppError::NotSignedIn => write!(f, "Not signed in"),
+			AppError::SessionStale => {
+				write!(f, "Could not refresh the session")
+			}
+			AppError::Api { code, message } => {
+				write!(f, "API error {code}: {message}")
+			}
+			AppError::Unauthorized { code, message } => {
+				write!(f, "Unauthorized ({code}): {message}")
+			}
+			AppError::Banned(info) => {
+				write!(f, "Banned ({}): {}", info.kind, info.message)
+			}
+			AppError::RateLimited => write!(f, "Rate limited"),
+			AppError::RequestBlocked => {
+				write!(f, "Request blocked by Cloudflare")
+			}
+			AppError::NetworkBlocked => {
+				write!(f, "Request blocked before it reached Grindr")
+			}
+			AppError::SessionCleared => {
+				write!(f, "Signed out while the request was in flight")
+			}
+			AppError::NotInitialized => {
+				write!(f, "GrindrClient not initialized")
+			}
+			AppError::ContentTooLarge => {
+				write!(f, "Larger than the upload limit")
+			}
+			AppError::Recaptcha(error) => write!(f, "reCAPTCHA error: {error}"),
+			AppError::Push(error) => write!(f, "push error: {error}"),
+		}
+	}
+}
+
+impl std::error::Error for AppError {}
+
+impl From<grindr::GrindrError> for AppError {
+	fn from(e: grindr::GrindrError) -> Self {
+		match e {
+			grindr::GrindrError::Http(msg) => AppError::Http(msg),
+			grindr::GrindrError::Connect(msg) => AppError::Connect(msg),
+			grindr::GrindrError::Auth(msg) => AppError::Auth(msg),
+			grindr::GrindrError::Api { code, message } => {
+				AppError::Api { code, message }
+			}
+			grindr::GrindrError::Unauthorized { code, message } => {
+				AppError::Unauthorized { code, message }
+			}
+			grindr::GrindrError::Banned(info) => AppError::Banned(info.into()),
+			grindr::GrindrError::RateLimited => AppError::RateLimited,
+			grindr::GrindrError::Blocked(grindr::BlockKind::Cloudflare) => {
+				AppError::RequestBlocked
+			}
+			grindr::GrindrError::Blocked(_) => AppError::NetworkBlocked,
+			grindr::GrindrError::SessionCleared => AppError::SessionCleared,
+			e @ grindr::GrindrError::Timeout(_) => {
+				AppError::Http(e.to_string())
+			}
+			_ => AppError::Http(e.to_string()),
+		}
+	}
+}
+
+enum SessionState {
+	SignedOut,
+	AwaitingFirstToken,
+	Authorized,
+}
+
+fn session_state(client: &grindr::GrindrClient) -> SessionState {
+	match client.session_receiver().borrow().as_ref() {
+		None => SessionState::SignedOut,
+		Some(session) if session.token.is_none() => {
+			SessionState::AwaitingFirstToken
+		}
+		Some(_) => SessionState::Authorized,
+	}
+}
+
+impl AppError {
+	pub fn from_client_error(
+		error: grindr::GrindrError,
+		client: &grindr::GrindrClient,
+	) -> Self {
+		match (AppError::from(error), session_state(client)) {
+			(AppError::Auth(_), SessionState::SignedOut) => {
+				AppError::NotSignedIn
+			}
+			(AppError::Auth(_), SessionState::AwaitingFirstToken) => {
+				AppError::SessionStale
+			}
+			(mapped, _) => mapped,
+		}
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn every_kind_matches_its_serde_tag() {
+		let ban = BanInfo {
+			kind: "profile".to_owned(),
+			code: 27,
+			message: String::new(),
+			reason: None,
+			sub_reason: None,
+			automated: None,
+		};
+		let errors = [
+			AppError::Http(String::new()),
+			AppError::Connect(String::new()),
+			AppError::Auth(String::new()),
+			AppError::Media(String::new()),
+			AppError::NotSignedIn,
+			AppError::SessionStale,
+			AppError::Api {
+				code: 0,
+				message: String::new(),
+			},
+			AppError::Unauthorized {
+				code: 0,
+				message: String::new(),
+			},
+			AppError::Banned(ban),
+			AppError::RateLimited,
+			AppError::RequestBlocked,
+			AppError::NetworkBlocked,
+			AppError::NotInitialized,
+			AppError::SessionCleared,
+			AppError::ContentTooLarge,
+			AppError::Recaptcha(RecaptchaError::Failed),
+		];
+		for error in errors {
+			assert_eq!(
+				serde_json::to_value(&error).unwrap()["kind"],
+				error.kind()
+			);
+		}
+	}
+
+	#[test]
+	fn simulated_ban_response_maps_to_banned_app_error() {
+		let raw = grindr::GrindrError::from_response(
+            403,
+            br#"{"code":27,"message":"Profile is banned","banSubReason":"DRUG_SALES","isBanAutomated":true}"#,
+        );
+		let app = AppError::from(raw);
+
+		let json = serde_json::to_value(&app).unwrap();
+		assert_eq!(json["kind"], "Banned");
+		assert_eq!(json["message"]["kind"], "profile");
+		assert_eq!(json["message"]["code"], 27);
+		assert_eq!(json["message"]["subReason"], "DRUG_SALES");
+		assert_eq!(json["message"]["automated"], true);
+	}
+
+	#[test]
+	fn a_timeout_reaches_the_page_as_a_retryable_http_error() {
+		let app = AppError::from(grindr::GrindrError::Timeout(
+			grindr::TimeoutPhase::Headers,
+		));
+		let json = serde_json::to_value(&app).unwrap();
+		assert_eq!(json["kind"], "Http");
+		assert_eq!(json["message"], "timed out: no response in time");
+	}
+
+	#[test]
+	fn connection_failures_keep_their_own_kind() {
+		let app =
+			AppError::from(grindr::GrindrError::Connect("refused".into()));
+		let json = serde_json::to_value(&app).unwrap();
+		assert_eq!(json["kind"], "Connect");
+		assert_eq!(json["message"], "refused");
+	}
+
+	#[tokio::test]
+	async fn auth_failure_without_a_session_maps_to_not_signed_in() {
+		let client =
+			grindr::GrindrClient::new(grindr::DeviceInfo::generate(), None)
+				.unwrap();
+		let error = client.refresh_session().await.unwrap_err();
+
+		let app = AppError::from_client_error(error, &client);
+
+		assert!(matches!(app, AppError::NotSignedIn));
+		assert_eq!(serde_json::to_value(&app).unwrap()["kind"], "NotSignedIn");
+	}
+
+	fn signed_in_client(
+		token: Option<grindr::SessionToken>,
+	) -> grindr::GrindrClient {
+		grindr::GrindrClient::new(
+			grindr::DeviceInfo::generate(),
+			Some(grindr::Session {
+				credentials: grindr::Credentials {
+					email: "user@example.com".to_owned(),
+					profile_id: Some("42".to_owned()),
+					auth_token: "auth-token".to_owned(),
+					kind: grindr::SessionKind::Email,
+					third_party_user_id: None,
+				},
+				token,
+			}),
+		)
+		.unwrap()
+	}
+
+	#[test]
+	fn auth_failure_with_a_session_stays_an_auth_error() {
+		let client = signed_in_client(Some(grindr::SessionToken {
+			session_id: "session-token".to_owned(),
+			expires_at: 9_999_999_999,
+			restriction: None,
+		}));
+
+		let app = AppError::from_client_error(
+			grindr::GrindrError::Auth("device key rejected".to_owned()),
+			&client,
+		);
+
+		assert!(matches!(app, AppError::Auth(_)));
+	}
+
+	#[test]
+	fn auth_failure_before_the_first_token_is_a_stale_session() {
+		let client = signed_in_client(None);
+
+		let app = AppError::from_client_error(
+			grindr::GrindrError::Auth("not signed in".to_owned()),
+			&client,
+		);
+
+		assert!(matches!(app, AppError::SessionStale));
+		assert_eq!(serde_json::to_value(&app).unwrap()["kind"], "SessionStale");
+	}
+
+	#[test]
+	fn simulated_rate_limit_maps_to_rate_limited() {
+		let app =
+			AppError::from(grindr::GrindrError::from_response(429, b"{}"));
+		assert_eq!(serde_json::to_value(&app).unwrap()["kind"], "RateLimited");
+	}
+
+	#[test]
+	fn cloudflare_block_maps_to_request_blocked() {
+		let block_page = br#"<html><head><title>Attention Required! | Cloudflare</title></head><body>Sorry, you have been blocked</body></html>"#;
+		let raw = grindr::GrindrError::from_response(403, block_page);
+		let app = AppError::from(raw);
+		assert_eq!(
+			serde_json::to_value(&app).unwrap()["kind"],
+			"RequestBlocked"
+		);
+	}
+
+	#[test]
+	fn a_non_cloudflare_block_maps_to_network_blocked() {
+		let proxy_page = br#"<html><body>Forbidden by your network administrator</body></html>"#;
+		let raw = grindr::GrindrError::from_response(403, proxy_page);
+		let app = AppError::from(raw);
+		assert_eq!(
+			serde_json::to_value(&app).unwrap()["kind"],
+			"NetworkBlocked"
+		);
+	}
+}

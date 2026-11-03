@@ -1,0 +1,34 @@
+{
+  "configurations" : [
+    {
+      "id" : "139881F6-8EC2-424C-8624-B24D2B99C882",
+      "name" : "Configuration 1",
+      "options" : {
+
+      }
+    }
+  ],
+  "defaultOptions" : {
+    "codeCoverage" : false,
+    "environmentVariableEntries" : [
+      {
+        "key" : "RUST_BACKTRACE",
+        "value" : "full"
+      },
+      {
+        "key" : "RUST_LOG",
+        "value" : "info"
+      }
+    ],
+    "performanceAntipatternCheckerEnabled" : true,
+    "targetForVariableExpansion" : {
+      "containerPath" : "container:open-grind.xcodeproj",
+      "identifier" : "7E14D82AB29A8C7225C618E6",
+      "name" : "open-grind_iOS"
+    }
+  },
+  "testTargets" : [
+
+  ],
+  "version" : 1
+}

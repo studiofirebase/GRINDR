@@ -1,0 +1,85 @@
+{
+	"$schema": "https://schema.tauri.app/config/2",
+	"productName": "Grindr Modificado V1",
+	"version": "0.1.0-rc.1-dev",
+	"identifier": "org.opengrind",
+	"build": {
+		"beforeDevCommand": "bun run patch-deps && bunx vite dev",
+		"devUrl": "http://localhost:1420",
+		"beforeBuildCommand": "bun run build",
+		"frontendDist": "../build"
+	},
+	"app": {
+		"macOSPrivateApi": true,
+		"windows": [
+			{
+				"label": "main",
+				"title": "Grindr Modificado V1",
+				"width": 1056,
+				"height": 800,
+				"minWidth": 320,
+				"minHeight": 300,
+				"theme": "Dark",
+				"create": false,
+				"titleBarStyle": "Visible",
+				"backgroundColor": "#0a0a0a",
+				"generalAutofillEnabled": false
+			}
+		],
+		"security": {
+			"csp": "default-src 'self'; script-src 'self'; style-src 'self'; style-src-attr 'self' 'unsafe-inline'; img-src 'self' data: ogmedia: http://ogmedia.localhost https://ogmedia.localhost https://tile.openstreetmap.org; media-src 'self' blob: ogmedia: http://ogmedia.localhost https://ogmedia.localhost; connect-src 'self' ipc: http://ipc.localhost https://ipc.localhost; object-src 'none'; frame-src 'none'; base-uri 'self'; form-action 'self'"
+		}
+	},
+	"bundle": {
+		"active": true,
+		"targets": [
+			"deb",
+			"nsis",
+			"app"
+		],
+		"icon": [
+			"icons/32x32.png",
+			"icons/128x128.png",
+			"icons/128x128@2x.png",
+			"icons/icon.icns",
+			"icons/Assets.car",
+			"icons/icon.ico"
+		],
+		"publisher": "Open Grind Governance",
+		"homepage": "https://opengrind.org",
+		"copyright": "Copyright (c) 2026-present Open Grind Governance",
+		"licenseFile": "../LICENSE",
+		"category": "SocialNetworking",
+		"shortDescription": "Unofficial FLOSS Grindr client",
+		"longDescription": "Cross-platform, free, libre, ad-free, tracker-free, privacy-centered and community-driven Grindr client",
+		"linux": {
+			"deb": {
+				"depends": [
+					"libsoup-3.0-0",
+					"librsvg2-2",
+					"libgstreamer1.0-0"
+				],
+				"recommends": [
+					"libayatana-appindicator3-1",
+					"gstreamer1.0-plugins-good",
+					"gstreamer1.0-libav"
+				]
+			}
+		},
+		"windows": {
+			"minimumWebview2Version": "111.0.1661.34",
+			"nsis": {
+				"installMode": "currentUser",
+				"installerHooks": "installer-hooks.nsh"
+			}
+		},
+		"macOS": {
+			"minimumSystemVersion": "11.6"
+		},
+		"android": {
+			"autoIncrementVersionCode": false,
+			"minSdkVersion": 28,
+			"versionCode": 11000
+		}
+	}
+}

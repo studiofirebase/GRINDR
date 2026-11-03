@@ -1,0 +1,158 @@
+{ pkgs, lib }:
+rec {
+  rustToolchain = pkgs.rust-bin.fromRustupToolchainFile ../rust-toolchain.toml;
+
+  frontendInputs = [
+    pkgs.bun
+    pkgs.nodejs_24
+  ];
+
+  cargoInputs = [
+    rustToolchain
+    pkgs.pkg-config
+    pkgs.stdenv.cc
+    pkgs.libclang.lib
+    pkgs.git # boring-sys2 patches BoringSSL with `git apply` on every build
+  ]
+  ++ lib.optionals pkgs.stdenv.isDarwin [ pkgs.libiconv ];
+
+  nativeCcInputs = with pkgs; [
+    cmake
+    ninja
+    perl
+    go
+  ];
+
+  baseEnv = {
+    LIBCLANG_PATH = "${pkgs.libclang.lib}/lib";
+    CMAKE_GENERATOR = "Ninja";
+  }
+  // lib.optionalAttrs pkgs.stdenv.isDarwin {
+    LIBRARY_PATH = "${pkgs.libiconv}/lib";
+  };
+
+  exportEnv = env: lib.concatStringsSep "\n" (lib.mapAttrsToList (k: v: "export ${k}=${v}") env);
+
+  # A dev shell (nix develop, direnv) exports compiler flags, CC, its own tools and
+  # SOURCE_DATE_EPOCH=315532800, and every one of them changes the build.
+  cleanEnv = ''
+    if [ -n "''${IN_NIX_SHELL:-}" ]; then
+      kept=()
+      for name in HOME USER LOGNAME TERM LANG SSL_CERT_FILE NIX_SSL_CERT_FILE CARGO_HOME XWIN_CACHE_DIR NODE_OPTIONS \
+        http_proxy https_proxy no_proxy all_proxy HTTP_PROXY HTTPS_PROXY NO_PROXY ALL_PROXY \
+        "''${!LC_@}" "''${!OPEN_GRIND_@}" "''${!MACOS_@}"; do
+        if [ -n "''${!name+set}" ]; then
+          kept+=("$name=''${!name}")
+        fi
+      done
+      hostPath=""
+      IFS=: read -ra entries <<<"$PATH"
+      for entry in "''${entries[@]}"; do
+        case "$entry" in
+          /nix/store/*) ;;
+          *) hostPath="''${hostPath:+$hostPath:}$entry" ;;
+        esac
+      done
+      echo "Leaving the Nix dev shell environment" >&2
+      exec env -i "''${kept[@]}" PATH="$hostPath" "$0" "$@"
+    fi
+  '';
+
+  reproPreamble = ''
+    ROOT="''${OPEN_GRIND_ROOT:-$PWD}"
+    cd "$ROOT"
+    # rustc and clang see the symlink-resolved path, which is what must match.
+    ROOT="$(pwd -P)"
+
+    # F-Droid's buildserver fixes its checkout and HOME at /repo/build/<appid>
+    # and /home/vagrant, so ours can never match; remap both sides to literals
+    # instead. Lives here, not in build.yml, which F-Droid never reads.
+    CARGO_HOME="''${CARGO_HOME:-$HOME/.cargo}"
+    export CARGO_HOME
+    export RUSTFLAGS="''${RUSTFLAGS:-} --remap-path-prefix=$CARGO_HOME=/cargo --remap-path-prefix=$ROOT=/open-grind"
+    # rustc's remap misses C: BoringSSL bakes __FILE__ from boring-sys2's
+    # OUT_DIR. cc forwards these into the cmake crate's CMAKE_C_FLAGS, and
+    # neither var feeds cargo's unit hash, so boring-sys2-<hash> stays stable.
+    prefixMaps="-ffile-prefix-map=$CARGO_HOME=/cargo -ffile-prefix-map=$ROOT=/open-grind"
+    export CFLAGS="''${CFLAGS:-} $prefixMaps"
+    export CXXFLAGS="''${CXXFLAGS:-} $prefixMaps"
+
+    # [patch.crates-io] resolves before any cargo command, so the patched
+    # sources have to exist by now. Re-runs are a stamp comparison.
+    bun run --cwd "$ROOT" patch-deps
+  '';
+
+  # Hoisting these into reproPreamble would change an Android build that three
+  # providers currently byte-match; do it only behind a fresh 3-box comparison.
+  desktopRepro = ''
+    export TZ=UTC
+    export LC_ALL=C
+    export LANG=C
+    SOURCE_DATE_EPOCH="$(git -C "$ROOT" log -1 --pretty=%ct)"
+    export SOURCE_DATE_EPOCH
+    export NODE_OPTIONS="''${NODE_OPTIONS:---max-old-space-size=4096}"
+  '';
+
+  mkDesktopScript =
+    {
+      name,
+      runtimeInputs,
+      env ? { },
+      text,
+    }:
+    pkgs.writeShellApplication {
+      inherit name runtimeInputs;
+      meta.mainProgram = name;
+      text = ''
+        ${cleanEnv}
+        ${exportEnv (baseEnv // env)}
+        ${reproPreamble}
+        ${desktopRepro}
+        ${text}
+      '';
+    };
+
+  mkApp = package: {
+    type = "app";
+    program = lib.getExe package;
+  };
+
+  toolsShell = pkgs.mkShell (
+    baseEnv
+    // {
+      packages =
+        cargoInputs
+        ++ frontendInputs
+        ++ [
+          pkgs.shellcheck
+          pkgs.minisign
+        ];
+      shellHook = ''
+        echo "Open Grind: shared tooling shell (no platform SDK)."
+        echo "  Rust:      $(rustc --version)"
+        echo "  Platforms: nix develop .#{android,linux,macos,windows-x64,windows-arm64}"
+      '';
+    }
+  );
+
+  playShell = pkgs.mkShell {
+    packages = frontendInputs ++ [
+      pkgs.bundletool
+      pkgs.fastlane
+      pkgs.jdk21_headless
+      pkgs.unzip
+    ];
+    FASTLANE_HIDE_GITHUB_ISSUES = "1";
+    FASTLANE_OPT_OUT_USAGE = "1";
+  };
+
+  webShell = pkgs.mkShell {
+    packages = frontendInputs ++ [
+      pkgs.git
+      pkgs.shellcheck
+    ];
+    shellHook = ''
+      echo "Open Grind: frontend-only shell (bun $(bun --version), node $(node --version))"
+    '';
+  };
+}

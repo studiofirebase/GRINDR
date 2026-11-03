@@ -1,0 +1,174 @@
+<script lang="ts">
+	import {
+		deleteDrawerMedia,
+		type DrawerMedia,
+		getAllDrawerMedia,
+	} from "$lib/api/messaging/drawer";
+	import { albumRoom, isVideoContent } from "$lib/components/album/album";
+	import PreviousUploadsSheet from "$lib/components/media-sheet/PreviousUploadsSheet.svelte";
+	import AddTile from "$lib/components/shared/AddTile.svelte";
+	import MediaSlotGrid from "$lib/components/shared/MediaSlotGrid.svelte";
+	import { receiveMedia } from "$lib/platform/media-intake.svelte";
+	import { proxyMediaUrl } from "$lib/util/media";
+	import type { AlbumContent } from "$lib/model/messaging/albums";
+	import type { PickedMedia } from "$lib/platform/media-picker";
+	import {
+		addAlbumMedia,
+		addPreviousUploads,
+	} from "../album-uploads/add-album-media";
+	import type {
+		AlbumUploads,
+		PendingUpload,
+		UploadLimits,
+	} from "../album-uploads/album-uploads-state.svelte";
+	import AlbumMediaEmpty from "./AlbumMediaEmpty.svelte";
+
+	let {
+		uploads,
+		albumId,
+		content,
+		pending,
+		removed,
+		saving,
+		limits,
+		onToggleRemoved,
+		onReorder,
+	}: {
+		uploads: AlbumUploads;
+		albumId: number;
+		content: AlbumContent[];
+		pending: PendingUpload[];
+		removed: number[];
+		saving: boolean;
+		limits: UploadLimits | null;
+		onToggleRemoved: (contentId: number) => void;
+		onReorder: (move: { from: number; to: number }) => void;
+	} = $props();
+
+	let adding = $state(false);
+	let sheetOpen = $state(false);
+
+	const removedKeys = $derived(
+		new Set(removed.map((contentId) => String(contentId))),
+	);
+
+	const pendingSlots = $derived(
+		pending.map(({ key, kind }) => ({
+			key: `pending:${key}`,
+			src: null,
+			alt: kind === "video" ? "Uploading video" : "Uploading photo",
+			video: kind === "video",
+			pending: true,
+		})),
+	);
+
+	const contentSlots = $derived(
+		content.map((item, index) => {
+			const video = isVideoContent(item.contentType);
+			const label = `${video ? "video" : "photo"} in slot ${index + 1}`;
+			return {
+				key: String(item.contentId),
+				src: proxyMediaUrl(item.thumbUrl),
+				alt: item.processing
+					? `Album ${label}, processing`
+					: `Album ${label}`,
+				deleteLabel: `Remove album ${label}`,
+				undoLabel: `Keep album ${label}`,
+				video,
+				pending: item.processing,
+				onDelete: () => onToggleRemoved(item.contentId),
+			};
+		}),
+	);
+
+	const slots = $derived([...pendingSlots, ...contentSlots]);
+
+	const room = $derived(
+		limits === null ? null : albumRoom({ content, pending, limits }),
+	);
+
+	const full = $derived(room !== null && !room.photos && !room.videos);
+
+	const itemRoom = $derived(
+		limits === null
+			? null
+			: limits.maxContentItemsPerAlbum - content.length - pending.length,
+	);
+
+	async function loadDrawerPhotos(): Promise<DrawerMedia[]> {
+		const drawer = await getAllDrawerMedia();
+		return drawer.filter((item) => !isVideoContent(item.contentType));
+	}
+
+	async function add(media?: PickedMedia[]) {
+		adding = true;
+		try {
+			await addAlbumMedia({
+				uploads,
+				albumId,
+				content: () => content,
+				media,
+			});
+		} finally {
+			adding = false;
+		}
+	}
+
+	receiveMedia(() =>
+		saving || adding
+			? null
+			: {
+					label: "Drop to add to album",
+					videos: true,
+					receive: (media) => void add(media),
+				},
+	);
+</script>
+
+{#if slots.length === 0}
+	<AlbumMediaEmpty
+		title="No media yet"
+		description="Photos and videos you add appear here."
+		disabled={saving || adding || full}
+		onAdd={() => (sheetOpen = true)}
+	/>
+{:else}
+	<MediaSlotGrid
+		{slots}
+		removed={removedKeys}
+		disabled={saving || pending.length > 0}
+		{leading}
+		{onReorder}
+	/>
+{/if}
+
+{#snippet leading()}
+	<AddTile
+		label="Add photos or videos"
+		class="aspect-square w-full rounded-xl"
+		disabled={saving || adding || full}
+		onclick={() => (sheetOpen = true)}
+	/>
+{/snippet}
+
+<PreviousUploadsSheet
+	bind:open={sheetOpen}
+	uploadLabel="Upload photos or videos"
+	submitLabel="Add to album"
+	max={itemRoom}
+	load={loadDrawerPhotos}
+	describe={(item) => ({
+		key: item.id,
+		src: proxyMediaUrl(item.url),
+		video: false,
+	})}
+	onUpload={() => void add()}
+	onDelete={(item) => deleteDrawerMedia(item.id)}
+	onSubmit={(chosen) =>
+		addPreviousUploads({
+			uploads,
+			albumId,
+			mediaIds: chosen.map(({ id }) => id),
+			present: content.map(({ contentId }) => contentId),
+		})}
+/>

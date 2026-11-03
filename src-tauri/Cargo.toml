@@ -1,0 +1,135 @@
+[package]
+name = "open-grind"
+version = "0.1.0-rc.1-dev"
+description = "FLOSS Grindr client"
+authors = ["Open Grind Governance (https://opengrind.org/governance)"]
+homepage = "https://opengrind.org"
+repository = "https://git.opengrind.org/open-grind/open-grind"
+license = "MIT"
+readme = "../README.md"
+publish = false
+edition = "2021"
+
+[lib]
+# The `_lib` suffix may seem redundant but it is necessary
+# to make the lib name unique and wouldn't conflict with the bin name.
+# This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
+name = "open_grind_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[[example]]
+name = "live-counterpart"
+path = "../e2e-live/counterpart/main.rs"
+
+[features]
+keychain = ["dep:apple-native-keyring-store", "dep:security-framework"]
+memory-storage = []
+private-api = []
+devtools = ["dep:tauri-plugin-devtools"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+cc = "1"
+
+[dev-dependencies]
+tauri = { version = "2", features = ["test"] }
+tokio = { version = "1", features = ["net", "io-util", "rt-multi-thread", "test-util"] }
+
+[dependencies]
+tauri = { version = "2", features = ["macos-private-api"] }
+tauri-plugin-opener = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+grindr = "0.31"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif", "bmp", "tiff"] }
+moxcms = "0.8"
+tokio = { version = "1", features = ["sync", "time", "rt", "macros"] }
+wreq = { version = "0.15", default-features = false }
+ed25519-dalek = { version = "2", default-features = false, features = ["alloc"] }
+blake2 = { version = "0.10", default-features = false }
+semver = "1"
+tauri-plugin-fs = "2"
+tauri-plugin-geolocation = "2"
+tauri-plugin-os = "2"
+tauri-plugin-clipboard-manager = "2"
+rmp-serde = "1.3.1"
+serde_bytes = "0.11"
+base64 = "0.22"
+getrandom = "0.3"
+keyring-core = "1.0.0"
+tauri-plugin-devtools = { version = "2.2.2", optional = true }
+tauri-plugin-dialog = "2"
+tracing = { version = "0.1", features = ["release_max_level_off"] }
+uuid = { version = "1", features = ["v4"] }
+sha2 = "0.10"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+apple-native-keyring-store = { version = "1.0.1", features = ["keychain", "protected"], optional = true }
+security-framework = { version = "3.7", optional = true }
+# Private WKWebView selector behind `-apple-visual-effect`, see src/appearance.rs
+objc2 = "0.6"
+# Scroll-wheel gesture phases for the debug probe, see src/scroll_phase.rs
+block2 = "0.6"
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSEvent", "NSHapticFeedback", "NSRunningApplication", "block2", "objc2-core-foundation"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSBundle", "NSError", "NSString"] }
+objc2-user-notifications = { version = "0.3", default-features = false, features = ["std", "bitflags", "block2", "UNNotification", "UNNotificationContent", "UNNotificationRequest", "UNNotificationResponse", "UNNotificationSettings", "UNNotificationSound", "UNNotificationTrigger", "UNUserNotificationCenter"] }
+rfd = "0.16"
+
+[target.'cfg(target_vendor = "apple")'.dependencies]
+wry = { version = "0.55", default-features = false }
+
+[target.'cfg(target_os = "ios")'.dependencies]
+apple-native-keyring-store = { version = "1.0.1", features = ["keychain", "protected"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-native-keyring-store = "1.1.0"
+webview2-com = "0.38"
+windows = { version = "0.61", features = ["Data_Xml_Dom", "Foundation", "UI_Notifications", "Win32_Foundation", "Win32_System_Com", "Win32_System_Registry", "Win32_UI_Notifications"] }
+windows-core = "0.61"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+dbus-secret-service-keyring-store = { version = "1.0.0", features = ["crypto-rust"] }
+gdk = "0.18"
+gdkwayland-sys = "0.18"
+webkit2gtk = { version = "2", features = ["v2_28"] }
+zbus = "5"
+
+[target.'cfg(target_os = "android")'.dependencies]
+android-native-keyring-store = "1.0.0"
+# Reads the EmbeddedSetup oauth_token cookie via android.webkit.CookieManager
+jni = "0.21"
+tauri-plugin-android-fs = "=28.2.2"
+
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+tauri-plugin-single-instance = "2"
+
+[profile.release]
+strip = "symbols"
+
+# Photo decoding and resizing take seconds without optimizations
+[profile.dev.package]
+image = { opt-level = 3 }
+png = { opt-level = 3 }
+fdeflate = { opt-level = 3 }
+miniz_oxide = { opt-level = 3 }
+simd-adler32 = { opt-level = 3 }
+crc32fast = { opt-level = 3 }
+zune-jpeg = { opt-level = 3 }
+zune-core = { opt-level = 3 }
+image-webp = { opt-level = 3 }
+gif = { opt-level = 3 }
+weezl = { opt-level = 3 }
+moxcms = { opt-level = 3 }
+pxfm = { opt-level = 3 }
+base64 = { opt-level = 3 }
+
+# See https://github.com/tauri-apps/tauri/pull/15777
+[patch.crates-io]
+wry = { path = ".patched/wry" }
+tauri-codegen = { path = ".patched/tauri-codegen" }
+http2 = { path = ".patched/http2" }
+tauri-plugin-geolocation = { path = ".patched/tauri-plugin-geolocation" }
+tauri = { path = ".patched/tauri" }
+tauri-utils = { path = ".patched/tauri-utils" }
+tauri-runtime = { path = ".patched/tauri-runtime" }
+tauri-runtime-wry = { path = ".patched/tauri-runtime-wry" }

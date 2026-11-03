@@ -1,0 +1,161 @@
+import { flushSync } from "svelte";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { Attachment } from "svelte/attachments";
+
+import {
+	bottomBlurBarClearance,
+	bottomChrome,
+	bottomChromeClearance,
+	remeasureScreenChrome,
+	topChrome,
+	topChromeClearance,
+} from "./screen-chrome.svelte";
+
+const VIEWPORT_HEIGHT = 800;
+
+const teardowns: (() => void)[] = [];
+
+function detachAfterEach(teardown: ReturnType<Attachment<HTMLElement>>) {
+	if (teardown) teardowns.push(teardown);
+}
+
+function bar({ top, height }: { top: number; height: number }) {
+	const element = document.createElement("nav");
+	element.style.padding = "0px";
+	element.getBoundingClientRect = () =>
+		({ top, bottom: top + height, height }) as DOMRect;
+	element.getClientRects = () => [{}] as unknown as DOMRectList;
+	document.body.append(element);
+	return element;
+}
+
+beforeEach(() => {
+	vi.stubGlobal("innerHeight", VIEWPORT_HEIGHT);
+	vi.stubGlobal(
+		"ResizeObserver",
+		class {
+			observe() {}
+			disconnect() {}
+		},
+	);
+});
+
+afterEach(() => {
+	for (const teardown of teardowns.splice(0)) teardown();
+	vi.restoreAllMocks();
+	vi.unstubAllGlobals();
+	document.body.replaceChildren();
+});
+
+describe("screen chrome clearance", () => {
+	it("clears a top bar down to its bottom edge and a bottom bar up to its top edge", () => {
+		detachAfterEach(topChrome(bar({ top: 0, height: 76 })));
+		detachAfterEach(bottomChrome(bar({ top: 736, height: 64 })));
+		remeasureScreenChrome();
+		flushSync();
+
+		expect(topChromeClearance()).toBe(76);
+		expect(bottomChromeClearance()).toBe(64);
+	});
+
+	it("reports progressive blur bars apart from the rest of the chrome", () => {
+		const navBar = bar({ top: 736, height: 64 });
+		navBar.classList.add("pblur");
+		detachAfterEach(bottomChrome(navBar));
+		detachAfterEach(bottomChrome(bar({ top: 600, height: 200 })));
+		remeasureScreenChrome();
+		flushSync();
+
+		expect(bottomChromeClearance()).toBe(200);
+		expect(bottomBlurBarClearance()).toBe(64);
+	});
+
+	it("keeps counting a bar in an inert pane that is still on screen", () => {
+		const pane = document.createElement("div");
+		pane.setAttribute("inert", "");
+		document.body.append(pane);
+		const navBar = bar({ top: 736, height: 64 });
+		pane.append(navBar);
+		detachAfterEach(bottomChrome(navBar));
+		remeasureScreenChrome();
+		flushSync();
+
+		expect(bottomChromeClearance()).toBe(64);
+	});
+
+	it("ignores a bar inside a leaving pane until the pane stays", () => {
+		const pane = document.createElement("div");
+		pane.setAttribute("data-leaving", "");
+		document.body.append(pane);
+		const navBar = bar({ top: 736, height: 64 });
+		pane.append(navBar);
+		detachAfterEach(bottomChrome(navBar));
+		remeasureScreenChrome();
+		flushSync();
+		expect(bottomChromeClearance()).toBe(0);
+
+		pane.removeAttribute("data-leaving");
+		remeasureScreenChrome();
+		flushSync();
+		expect(bottomChromeClearance()).toBe(64);
+	});
+
+	it("ignores a bar inside a covered pane without reading its layout or style", () => {
+		const pane = document.createElement("div");
+		pane.setAttribute("data-covered", "");
+		document.body.append(pane);
+		const navBar = bar({ top: 736, height: 64 });
+		pane.append(navBar);
+		detachAfterEach(bottomChrome(navBar));
+		const layoutReads = [
+			vi.spyOn(navBar, "getClientRects"),
+			vi.spyOn(navBar, "getBoundingClientRect"),
+			vi.spyOn(window, "getComputedStyle"),
+		];
+		remeasureScreenChrome();
+		flushSync();
+
+		expect(bottomChromeClearance()).toBe(0);
+		for (const read of layoutReads) expect(read).not.toHaveBeenCalled();
+
+		pane.removeAttribute("data-covered");
+		remeasureScreenChrome();
+		flushSync();
+		expect(bottomChromeClearance()).toBe(64);
+	});
+
+	it("ignores a bar under a hidden pane until the pane shows again", () => {
+		const pane = document.createElement("div");
+		pane.style.visibility = "hidden";
+		document.body.append(pane);
+		const navBar = bar({ top: 0, height: 76 });
+		pane.append(navBar);
+		detachAfterEach(topChrome(navBar));
+		remeasureScreenChrome();
+		flushSync();
+		expect(topChromeClearance()).toBe(0);
+
+		pane.style.visibility = "";
+		remeasureScreenChrome();
+		flushSync();
+		expect(topChromeClearance()).toBe(76);
+	});
+});
+
+describe("screen chrome marking", () => {
+	it("marks each bar with its edge while attached and unmarks it on detach", () => {
+		const topBar = bar({ top: 0, height: 76 });
+		const bottomBar = bar({ top: 736, height: 64 });
+		const detachTop = topChrome(topBar);
+		const detachBottom = bottomChrome(bottomBar);
+
+		expect(topBar.dataset.screenChrome).toBe("top");
+		expect(bottomBar.dataset.screenChrome).toBe("bottom");
+
+		if (detachTop) detachTop();
+		if (detachBottom) detachBottom();
+
+		expect(topBar.hasAttribute("data-screen-chrome")).toBe(false);
+		expect(bottomBar.hasAttribute("data-screen-chrome")).toBe(false);
+	});
+});

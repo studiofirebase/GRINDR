@@ -1,0 +1,48 @@
+{
+	"name": "open-grind-docs",
+	"private": true,
+	"license": "MIT",
+	"type": "module",
+	"module": "index.ts",
+	"scripts": {
+		"audit:coverage": "bun run scripts/audit-coverage.ts",
+		"audit:links": "bun run scripts/audit-links.ts",
+		"audit:openapi": "bun run scripts/audit-openapi.ts",
+		"audit:queries": "bun run scripts/audit-queries.ts",
+		"build": "bun run generate && vitepress build",
+		"cleanup": "bun run scripts/cleanup-openapi.ts",
+		"deploy": "bun run build && bun gh-pages -d .vitepress/dist",
+		"generate": "bun run scripts/generate-docs.ts",
+		"preview": "vitepress preview",
+		"start": "bun run generate && vitepress dev",
+		"validate": "bun run scripts/validate-openapi.ts"
+	},
+	"devDependencies": {
+		"@iconify-json/lucide": "^1.2.126",
+		"@iconify-json/simple-icons": "^1.2.93",
+		"@iconify/types": "^2.0.0",
+		"@iconify/utils": "^3.1.4",
+		"@types/bun": "latest",
+		"@types/markdown-it-footnote": "^3.0.4",
+		"gh-pages": "^6.3.0",
+		"prettier": "^3.8.4",
+		"vitepress": "^2.0.0-alpha.17"
+	},
+	"peerDependencies": {
+		"typescript": "^6"
+	},
+	"overrides": {
+		"esbuild": "^0.28.1",
+		"nanoid": "^3.3.18",
+		"postcss": "^8.5.25",
+		"source-map-js": "^1.2.2",
+		"vite": "^7.3.7",
+		"vue": "^3.5.43"
+	},
+	"patchedDependencies": {
+		"vitepress@2.0.0-alpha.17": "patches/vitepress@2.0.0-alpha.17.patch"
+	},
+	"dependencies": {
+		"markdown-it-footnote": "^4.0.0"
+	}
+}

@@ -1,0 +1,112 @@
+import { vi } from "vitest";
+
+vi.mock("$env/dynamic/public", () => ({ env: import.meta.env }));
+
+// jsdom has no matchMedia, and svelte/motion reads it for reduced motion.
+if (typeof window !== "undefined" && !window.matchMedia) {
+	window.matchMedia = (query: string) =>
+		({
+			matches: false,
+			media: query,
+			onchange: null,
+			addEventListener: () => {},
+			removeEventListener: () => {},
+			addListener: () => {},
+			removeListener: () => {},
+			dispatchEvent: () => false,
+		}) as MediaQueryList;
+}
+
+// jsdom has no Element.scrollTo; carrying the assignment over lets scroll
+// code observe its own writes.
+if (typeof Element !== "undefined" && !Element.prototype.scrollTo) {
+	Element.prototype.scrollTo = function (
+		options?: ScrollToOptions | number,
+		y?: number,
+	) {
+		if (typeof options === "number") {
+			this.scrollLeft = options;
+			if (y !== undefined) this.scrollTop = y;
+			return;
+		}
+		if (options?.left !== undefined) this.scrollLeft = options.left;
+		if (options?.top !== undefined) this.scrollTop = options.top;
+	};
+}
+
+// jsdom has no Web Animations either, and svelte/transition drives every
+// transition through element.animate, completing it from `onfinish`.
+if (typeof Element !== "undefined" && !Element.prototype.animate) {
+	Element.prototype.animate = () => {
+		const animation = {
+			cancel: () => {},
+			finish: () => {},
+			pause: () => {},
+			play: () => {},
+			reverse: () => {},
+			addEventListener: () => {},
+			removeEventListener: () => {},
+			currentTime: 0,
+			playState: "finished",
+			effect: null,
+			finished: Promise.resolve(),
+			onfinish: null as (() => void) | null,
+		};
+		queueMicrotask(() => animation.onfinish?.());
+		return animation as unknown as Animation;
+	};
+}
+
+// jsdom's Blob has no arrayBuffer either, and media reading goes through it.
+if (typeof Blob !== "undefined" && !Blob.prototype.arrayBuffer) {
+	Blob.prototype.arrayBuffer = function () {
+		return new Promise((resolve, reject) => {
+			const reader = new FileReader();
+			reader.onload = () => resolve(reader.result as ArrayBuffer);
+			reader.onerror = () =>
+				reject(
+					new Error(reader.error?.message ?? "Failed to read blob"),
+				);
+			reader.readAsArrayBuffer(this);
+		});
+	};
+}
+
+// jsdom has no CSS.supports, and the backdrop-filter feature test reads it.
+if (typeof globalThis.CSS === "undefined") {
+	globalThis.CSS = {
+		supports: () => true,
+		escape: (value: string) => value,
+	} as unknown as typeof CSS;
+} else if (typeof globalThis.CSS.supports !== "function") {
+	globalThis.CSS.supports = () => true;
+}
+
+// jsdom has no ResizeObserver, and bits-ui measures every slider track with it.
+if (typeof globalThis.ResizeObserver === "undefined") {
+	globalThis.ResizeObserver = class {
+		observe() {}
+		unobserve() {}
+		disconnect() {}
+	};
+}
+
+// jsdom has no modal dialogs; opening one only needs the `open` state, and
+// closing one fires `close` as a task, as browsers do.
+if (
+	typeof HTMLDialogElement !== "undefined" &&
+	!HTMLDialogElement.prototype.showModal
+) {
+	HTMLDialogElement.prototype.showModal = function () {
+		this.open = true;
+	};
+	HTMLDialogElement.prototype.close = function () {
+		if (!this.open) return;
+		this.open = false;
+		setTimeout(() => this.dispatchEvent(new Event("close")));
+	};
+}
+
+if (typeof HTMLMediaElement !== "undefined") {
+	HTMLMediaElement.prototype.load = () => {};
+}

@@ -1,0 +1,202 @@
+<script lang="ts">
+	import PauseIcon from "phosphor-svelte/lib/PauseIcon";
+	import PlayIcon from "phosphor-svelte/lib/PlayIcon";
+	import SpeakerSimpleHighIcon from "phosphor-svelte/lib/SpeakerSimpleHighIcon";
+	import SpeakerSimpleSlashIcon from "phosphor-svelte/lib/SpeakerSimpleSlashIcon";
+	import { sineOut } from "svelte/easing";
+	import { fade } from "svelte/transition";
+	import type { SvelteMediaTimeRange } from "svelte/elements";
+
+	import { Button } from "$lib/components/ui/button";
+	import { now } from "$lib/util/clock";
+	import { formatMediaDuration } from "$lib/util/format-time";
+	import { firstFrameSrc, releaseVideoOnDestroy } from "$lib/util/media";
+	import VideoScrubber from "./VideoScrubber.svelte";
+
+	let {
+		src,
+		poster,
+		loop = false,
+		onready,
+		onfail,
+	}: {
+		src: string;
+		poster: string | null;
+		loop?: boolean;
+		onready?: () => void;
+		onfail?: (failure: { undecodable: boolean; detail: string }) => void;
+	} = $props();
+
+	let element = $state<HTMLVideoElement | null>(null);
+	let retriedSrc: string | null = null;
+	let startedAt = now();
+
+	function elapsedSeconds(): string {
+		return ((now() - startedAt) / 1000).toFixed(1);
+	}
+
+	function describeFailure(error: MediaError | null): string {
+		if (error === null)
+			return `unknown media error after ${elapsedSeconds()}s`;
+		const message = error.message === "" ? "" : `: ${error.message}`;
+		return `MediaError ${error.code} after ${elapsedSeconds()}s${message}`;
+	}
+
+	function failed() {
+		const video = element;
+		const error = video?.error ?? null;
+		const undecodable =
+			error?.code === MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED;
+		const untouched =
+			video !== null &&
+			video.readyState === HTMLMediaElement.HAVE_NOTHING;
+		if (!undecodable && untouched && retriedSrc !== src) {
+			retriedSrc = src;
+			startedAt = now();
+			video?.load();
+			return;
+		}
+		onfail?.({ undecodable, detail: describeFailure(error) });
+	}
+
+	function loaded() {
+		if (element !== null && element.videoWidth === 0) {
+			onfail?.({
+				undecodable: true,
+				detail: `no decodable video track after ${elapsedSeconds()}s`,
+			});
+			return;
+		}
+		onready?.();
+	}
+
+	let paused = $state(true);
+	let muted = $state(true);
+	let currentTime = $state(0);
+	let queuedSeek = $state<number | null>(null);
+	let duration = $state(0);
+	let buffered = $state<SvelteMediaTimeRange[]>([]);
+
+	let hovering = $state(false);
+	let focusHeld = $state(false);
+	let revealed = $state(true);
+
+	const controlsVisible = $derived(revealed || hovering || focusHeld);
+
+	function enter(event: PointerEvent) {
+		if (event.pointerType === "mouse") hovering = true;
+	}
+
+	function leave(event: PointerEvent) {
+		if (event.pointerType !== "mouse") return;
+		hovering = false;
+		revealed = false;
+	}
+
+	function toggle(event: PointerEvent) {
+		if (event.pointerType !== "mouse") revealed = !revealed;
+	}
+
+	function seek(time: number) {
+		if (element?.seeking) queuedSeek = time;
+		else currentTime = time;
+	}
+
+	function seeked() {
+		if (queuedSeek === null) return;
+		currentTime = queuedSeek;
+		queuedSeek = null;
+	}
+
+	function focusEntered(event: FocusEvent) {
+		focusHeld =
+			event.target instanceof Element &&
+			event.target.matches(":focus-visible");
+	}
+
+	function focusLeft(event: FocusEvent & { currentTarget: HTMLElement }) {
+		focusHeld =
+			event.relatedTarget instanceof Node &&
+			event.currentTarget.contains(event.relatedTarget);
+	}
+</script>
+
+<!-- svelte-ignore a11y_no_static_element_interactions -->
+<div
+	data-slot="video-surface"
+	class="relative size-full"
+	onpointerenter={enter}
+	onpointerleave={leave}
+	onfocusin={focusEntered}
+	onfocusout={focusLeft}
+>
+	<!-- svelte-ignore a11y_media_has_caption -->
+	<video
+		bind:this={element}
+		{@attach releaseVideoOnDestroy}
+		onpointerdown={toggle}
+		bind:paused
+		bind:muted
+		bind:currentTime
+		bind:duration
+		bind:buffered
+		src={poster === null ? firstFrameSrc(src) : src}
+		poster={poster ?? undefined}
+		{loop}
+		playsinline
+		preload="metadata"
+		data-slot="video-player-media"
+		class="size-full object-contain"
+		onloadeddata={loaded}
+		onseeked={seeked}
+		onerror={failed}
+	></video>
+	{#if controlsVisible}
+		<div class="absolute inset-x-4 bottom-4 flex justify-center">
+			<div
+				data-pswp-interactive
+				transition:fade={{ duration: 150, easing: sineOut }}
+				class="flex max-w-xl grow items-center gap-3 rounded-full p-3 text-white glass-media-controls-subdued"
+			>
+				<Button
+					variant="outline"
+					size="icon-lg"
+					aria-label={paused ? "Play" : "Pause"}
+					class="shrink-0 cursor-pointer glass-media-controls"
+					onclick={() => (paused = !paused)}
+				>
+					{#if paused}
+						<PlayIcon size={22} weight="fill" />
+					{:else}
+						<PauseIcon size={22} weight="fill" />
+					{/if}
+				</Button>
+				<span class="shrink-0 text-[13px] tracking-tight tabular-nums">
+					{formatMediaDuration(queuedSeek ?? currentTime)}
+				</span>
+				<VideoScrubber
+					currentTime={queuedSeek ?? currentTime}
+					{duration}
+					{buffered}
+					onseek={seek}
+				/>
+				<span class="shrink-0 text-[13px] tracking-tight tabular-nums">
+					{formatMediaDuration(duration)}
+				</span>
+				<Button
+					variant="outline"
+					size="icon-lg"
+					aria-label={muted ? "Unmute" : "Mute"}
+					class="shrink-0 cursor-pointer glass-media-controls"
+					onclick={() => (muted = !muted)}
+				>
+					{#if muted}
+						<SpeakerSimpleSlashIcon size={22} weight="fill" />
+					{:else}
+						<SpeakerSimpleHighIcon size={22} weight="fill" />
+					{/if}
+				</Button>
+			</div>
+		</div>
+	{/if}
+</div>

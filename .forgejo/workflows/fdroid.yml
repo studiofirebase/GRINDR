@@ -1,0 +1,29 @@
+name: fdroid
+
+on:
+  workflow_dispatch: {}
+
+concurrency:
+  group: open-grind-fdroid
+  cancel-in-progress: false
+
+jobs:
+  fdroid:
+    runs-on: ["debian", "8c16g", "hetzner"]
+    timeout-minutes: 70
+    steps:
+      - name: Checkout
+        run: |
+          git init -q .
+          git remote add origin "$FORGEJO_SERVER_URL/$FORGEJO_REPOSITORY.git"
+          git fetch --depth 1 origin "$FORGEJO_REF_NAME"
+          git checkout -q "$FORGEJO_SHA"
+      - name: Set up the build environment
+        run: sh ci/fdroid/setup.sh
+      - name: Build the F-Droid way, print hash
+        run: bun ci/fdroid/fdroid.ts
+      - name: Upload F-Droid-built APK
+        uses: https://code.forgejo.org/forgejo/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
+        with:
+          name: open-grind-fdroid-unsigned
+          path: fdroid-out/

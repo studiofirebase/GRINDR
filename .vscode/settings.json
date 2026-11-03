@@ -1,0 +1,35 @@
+{
+	"editor.tabCompletion": "on",
+	"eslint.validate": ["javascript", "typescript", "svelte"],
+	"editor.formatOnSave": true,
+	"editor.defaultFormatter": "esbenp.prettier-vscode",
+	"[javascript]": { "editor.defaultFormatter": "esbenp.prettier-vscode" },
+	"[typescript]": { "editor.defaultFormatter": "esbenp.prettier-vscode" },
+	"[svelte]": { "editor.defaultFormatter": "esbenp.prettier-vscode" },
+	"[rust]": { "editor.defaultFormatter": "rust-lang.rust-analyzer" },
+	"editor.codeActionsOnSave": { "source.fixAll.eslint": "explicit" },
+	"editor.indentSize": "tabSize",
+	"editor.detectIndentation": false,
+	"files.insertFinalNewline": true,
+	"json.schemaDownload.trustedDomains": {
+		"https://schema.tauri.app/config/2": true
+	},
+	"json.schemas": [
+		{
+			"fileMatch": ["**/docs/lib/openapi.json"],
+			"url": "./docs/lib/openapi-3.0.schema.json"
+		}
+	],
+	"markdown.extension.toc.updateOnSave": false,
+	"[markdown]": {
+		"editor.tabSize": 4,
+		"editor.detectIndentation": false,
+		"editor.insertSpaces": true,
+		"editor.defaultFormatter": "esbenp.prettier-vscode"
+	},
+	"[xml]": { "editor.defaultFormatter": "redhat.vscode-xml" },
+	"files.associations": { "layout.css": "tailwindcss" },
+	"editor.quickSuggestions": { "strings": "on" },
+	"[nix]": { "editor.defaultFormatter": "jnoortheen.nix-ide" },
+	"rust-analyzer.diagnostics.disabled": ["unlinked-file"]
+}

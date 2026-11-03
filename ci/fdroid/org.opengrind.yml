@@ -1,0 +1,49 @@
+AntiFeatures:
+  NonFreeAdd:
+    en-US: Offers optional add-ons (push notifications, reCAPTCHA helper) that include Google's proprietary libraries.
+  NonFreeNet:
+    en-US: The app is a client for Grindr's proprietary, closed API. Optional GIF search uses GIPHY's proprietary API.
+  TetheredNet:
+    en-US: Depends on Grindr's servers, which cannot be self-hosted or replaced.
+Categories:
+  - Internet
+  - Social Network
+License: MIT
+AuthorName: Open Grind Governance
+WebSite: https://opengrind.org
+SourceCode: https://git.opengrind.org/open-grind/open-grind
+IssueTracker: https://git.opengrind.org/open-grind/open-grind/issues
+Changelog: https://git.opengrind.org/open-grind/open-grind/releases
+
+AutoName: Open Grind
+
+RepoType: git
+Repo: https://git.opengrind.org/open-grind/open-grind.git
+
+Builds:
+  - versionName: ${versionName}
+    versionCode: ${versionCode}
+    commit: ${commit}
+    sudo:
+      - apt-get update
+      - apt-get install -y gcc libc-dev rustup
+      - apt-get install -y -t trixie-backports libclang1-${libclangMajor} libclang-common-${libclangMajor}-dev
+      - echo "deb https://deb.debian.org/debian forky main" > /etc/apt/sources.list.d/forky.list
+      - apt-get update
+      - apt-get install -y -t forky nodejs
+    output: src-tauri/gen/android/app/build/outputs/apk/*/release/open-grind-v*-android-${abi}-unsigned.apk
+    binary: https://git.opengrind.org/open-grind/open-grind/releases/download/v%v/open-grind-v%v-android-${abi}.apk
+    build: OPEN_GRIND_ANDROID_ABI=${rustTarget} ci/fdroid/build-android.sh
+    ndk: ${ndkVersion}
+
+AllowedAPKSigningKeys: 2805fdd8f0badb9424d3244c5e5b3473cef5b8798ec1117382e89eda45c3658c
+
+MaintainerNotes: ci/fdroid/build-android.sh mirrors the Nix release toolchain.
+
+AutoUpdateMode: Version
+UpdateCheckMode: Tags ^v\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$
+VercodeOperation:
+  - ${vercodeOperations}
+UpdateCheckData: src-tauri/tauri.conf.json|"versionCode":\s*(\d+)|.|"version":\s*"([^"]+)"
+CurrentVersion: ${versionName}
+CurrentVersionCode: ${currentVersionCode}

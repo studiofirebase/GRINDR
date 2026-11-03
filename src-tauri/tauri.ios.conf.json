@@ -1,0 +1,11 @@
+{
+	"version": "0.1.0",
+	"identifier": "italosantos.com",
+	"bundle": {
+		"iOS": {
+			"minimumSystemVersion": "15.0",
+			"developmentTeam": "82S989KJVB",
+			"infoPlist": "Info.ios.plist"
+		}
+	}
+}

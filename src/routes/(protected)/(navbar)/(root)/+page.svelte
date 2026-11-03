@@ -1,0 +1,81 @@
+<script lang="ts">
+	import {
+		hydratePreferences,
+		preferencesSnapshot,
+	} from "$lib/app-data/preferences.svelte";
+	import DataRefreshControl from "$lib/components/feedback/DataRefreshControl.svelte";
+	import ScrollToTopButton from "$lib/components/shared/ScrollToTopButton.svelte";
+	import { gridState } from "$lib/grid/grid-state.svelte";
+	import { restoreScrollOnce } from "$lib/util/scroll-restore.svelte";
+	import { revealedGridScrollTop } from "./grid-reveal";
+	import Grid from "./Grid.svelte";
+	import LocationChooser from "./LocationEmpty.svelte";
+	import TopBar from "./top-bar/TopBar.svelte";
+
+	const preferencesHydrated = hydratePreferences();
+	const geohash = $derived(preferencesSnapshot().geohash);
+
+	let gridContainer: HTMLElement | null = $state(null);
+
+	restoreScrollOnce({
+		container: () => gridContainer,
+		state: gridState,
+		resolveTop: ({ scroller, savedTop }) => {
+			const revealId = gridState.consumeReveal();
+			if (revealId === null) return savedTop;
+			return revealedGridScrollTop({
+				scroller,
+				savedTop,
+				index: gridState.indexInProfiles(revealId),
+			});
+		},
+	});
+
+	$effect(() =>
+		gridState.onStartOver(() => {
+			if (gridContainer) gridContainer.scrollTop = 0;
+		}),
+	);
+</script>
+
+<svelte:head>
+	<title>Open Grind</title>
+</svelte:head>
+{#await preferencesHydrated then}
+	{#if geohash === null}
+		<main class="m-auto flex max-w-full flex-1">
+			<LocationChooser />
+		</main>
+	{:else}
+		<main class="screen-nav-host">
+			<TopBar />
+			{#if !gridState.loading && !gridState.error}
+				<DataRefreshControl
+					container={gridContainer}
+					updating={gridState.refreshing}
+					position="top"
+					onrefresh={() =>
+						void gridState.refresh({ keepLoadedPages: false })}
+				/>
+			{/if}
+			<div
+				class="pull-scroller"
+				bind:this={gridContainer}
+				onscroll={() =>
+					(gridState.scrollY = gridContainer?.scrollTop ?? 0)}
+			>
+				<div
+					data-slot="grid-content"
+					data-refresh-content
+					class="@container/photo-grid min-h-overscrollable flex flex-col gap-4 px-4 pt-header-clear-17 pb-nav-clear"
+				>
+					<Grid {geohash} />
+				</div>
+			</div>
+			<ScrollToTopButton
+				container={gridContainer}
+				class="bottom-nav-clear"
+			/>
+		</main>
+	{/if}
+{/await}

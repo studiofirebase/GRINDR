@@ -1,0 +1,742 @@
+pub mod api;
+mod app_data;
+mod app_origin;
+mod app_settings;
+mod appearance;
+mod appimage;
+mod context_menu;
+mod desktop_entry;
+mod error;
+mod haptics;
+mod hex;
+#[cfg(target_os = "android")]
+mod keyboard_media;
+pub mod media;
+#[cfg(target_os = "android")]
+mod media_drag;
+mod media_picker;
+mod photo;
+#[cfg(test)]
+mod pin_support;
+mod plugin_rejection;
+#[cfg(target_os = "macos")]
+mod predecessor;
+#[cfg(any(target_os = "android", test))]
+mod push_poll;
+mod scroll_phase;
+mod state;
+mod storage;
+mod upload;
+mod video;
+
+use tauri::Manager;
+
+use crate::state::AppState;
+use crate::storage::{
+	AuthStorage, DeviceStorage, OpenRouterKeyStorage, ProfileStorage,
+	SavedProfile, SigningKeyStorage,
+};
+
+#[cfg(target_os = "windows")]
+const MIN_CHROMIUM_MAJOR: u32 = 111;
+#[cfg(target_os = "linux")]
+const MIN_WEBKITGTK: (u32, u32) = (2, 42);
+
+pub(crate) const MAIN_WINDOW_LABEL: &str = "main";
+
+pub(crate) fn watch_client(
+	app: tauri::AppHandle,
+	client: grindr::GrindrClient,
+) {
+	{
+		let client = client.clone();
+		let handle = app.clone();
+		let mut session_rx = client.session_receiver();
+		let mut stored =
+			session_rx.borrow().as_ref().map(|s| s.credentials.clone());
+		let mut restriction = None;
+		let task = tauri::async_runtime::spawn(async move {
+			if let Some(credentials) = stored.clone() {
+				persist_profile(&client, credentials, true).await;
+			}
+			while session_rx.changed().await.is_ok() {
+				let (next, next_restriction) = {
+					let session = session_rx.borrow();
+					(
+						session.as_ref().map(|s| s.credentials.clone()),
+						session.as_ref().and_then(|s| {
+							s.token.as_ref()?.restriction.clone()
+						}),
+					)
+				};
+				if next_restriction != restriction {
+					if let Some(r) = &next_restriction {
+						use tauri::Emitter;
+						handle
+							.emit(
+								"auth:restriction",
+								api::auth::Restriction::from(r.clone()),
+							)
+							.ok();
+					}
+					restriction = next_restriction;
+				}
+				if next == stored {
+					continue;
+				}
+				match &next {
+					Some(credentials) => {
+						if let Err(error) =
+							AuthStorage::set_credentials(credentials)
+						{
+							tracing::error!(
+								"[session] persist failed: {error}"
+							);
+						}
+						persist_profile(&client, credentials.clone(), true)
+							.await;
+						// A new sign-in (or a profile switch landing here) may
+						// have added background candidates: reconcile without
+						// blocking this watch loop.
+						let resync_app = handle.clone();
+						tauri::async_runtime::spawn(async move {
+							api::secondary_sessions::resync_all(&resync_app)
+								.await;
+						});
+					}
+					None => AuthStorage::delete_credentials(),
+				}
+				stored = next;
+			}
+		});
+		app.state::<AppState>().keep_task(task);
+	}
+
+	{
+		let mut key_rx = client.signing_key_receiver();
+		let task = tauri::async_runtime::spawn(async move {
+			SigningKeyStorage::restore(&client).await;
+			while key_rx.changed().await.is_ok() {
+				let key = { key_rx.borrow().clone() };
+				match key {
+					Some(key) => {
+						if let Err(error) = SigningKeyStorage::save(&key) {
+							tracing::error!(
+								"[signing] persist failed: {error}"
+							);
+						}
+						let credentials = {
+							client
+								.session_receiver()
+								.borrow()
+								.as_ref()
+								.map(|session| session.credentials.clone())
+						};
+						if let Some(credentials) = credentials {
+							persist_profile_with_key(
+								&client,
+								credentials,
+								Some(key),
+								true,
+							)
+							.await;
+						}
+					}
+					None => SigningKeyStorage::delete(),
+				}
+			}
+		});
+		app.state::<AppState>().keep_task(task);
+	}
+}
+
+async fn persist_profile(
+	client: &grindr::GrindrClient,
+	credentials: grindr::Credentials,
+	active: bool,
+) {
+	let key = client.signing_key_receiver().borrow().clone();
+	persist_profile_with_key(client, credentials, key, active).await;
+}
+
+async fn persist_profile_with_key(
+	client: &grindr::GrindrClient,
+	credentials: grindr::Credentials,
+	signing_key: Option<grindr::DeviceSigningKey>,
+	active: bool,
+) {
+	let Some(profile_id) = credentials.profile_id.clone() else {
+		return;
+	};
+	let profile = SavedProfile {
+		profile_id,
+		name: credentials.email.clone(),
+		device: client.current_device().await,
+		credentials,
+		signing_key,
+		geohash: None,
+	};
+	let result = if active {
+		ProfileStorage::save_active_profile(profile)
+	} else {
+		ProfileStorage::save_profile(profile)
+	};
+	if let Err(error) = result {
+		tracing::error!("[profiles] persist failed: {error}");
+	}
+}
+
+const OPEN_GRIND_PLATFORM: &str = if cfg!(target_os = "android") {
+	"android"
+} else if cfg!(target_os = "ios") {
+	"ios"
+} else if cfg!(target_os = "windows") {
+	"windows"
+} else if cfg!(target_os = "macos") {
+	"macos"
+} else if cfg!(target_os = "linux") {
+	"linux"
+} else {
+	"unknown"
+};
+
+fn open_grind_platform_plugin<R: tauri::Runtime>(
+) -> tauri::plugin::TauriPlugin<R> {
+	tauri::plugin::Builder::<R, ()>::new("open-grind-platform")
+		.js_init_script(format!(
+			r#"window.__OPEN_GRIND_PLATFORM = "{OPEN_GRIND_PLATFORM}";"#
+		))
+		.build()
+}
+
+// macOS reports a WebKit build number that doesn't track Safari versions
+#[cfg(desktop)]
+fn outdated_webview_notice() -> Option<String> {
+	#[cfg(target_os = "windows")]
+	{
+		let version = tauri::webview_version().ok()?;
+		if version.split('.').next()?.parse::<u32>().ok()? < MIN_CHROMIUM_MAJOR
+		{
+			return Some(format!(
+                "Open Grind needs Microsoft Edge WebView2 {MIN_CHROMIUM_MAJOR} or newer to \
+                 display correctly (found {version}).\n\nUpdate the WebView2 Runtime, then \
+                 restart the app."
+            ));
+		}
+	}
+
+	#[cfg(target_os = "linux")]
+	{
+		let version = tauri::webview_version().ok()?;
+		let mut parts = version.split('.');
+		let major = parts.next()?.parse::<u32>().ok()?;
+		let minor = parts
+			.next()
+			.and_then(|p| p.parse::<u32>().ok())
+			.unwrap_or(0);
+		if (major, minor) < MIN_WEBKITGTK {
+			let (min_major, min_minor) = MIN_WEBKITGTK;
+			return Some(format!(
+                "Open Grind needs WebKitGTK {min_major}.{min_minor} or newer to display \
+                 correctly (found {version}).\n\nUpdate webkit2gtk / your distribution, \
+                 then restart the app."
+            ));
+		}
+	}
+
+	None
+}
+
+#[cfg(desktop)]
+pub(crate) fn focus_main_window(app: &tauri::AppHandle) {
+	if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
+		let _ = window.unminimize();
+		let _ = window.show();
+		let _ = window.set_focus();
+	}
+}
+
+// Tauri exits only once every window is gone, and sign-in opens a second one.
+#[cfg(desktop)]
+fn quit_when_closed(window: &tauri::WebviewWindow) {
+	if window.label() != MAIN_WINDOW_LABEL {
+		return;
+	}
+	let app = window.app_handle().clone();
+	window.on_window_event(move |event| {
+		if matches!(event, tauri::WindowEvent::Destroyed) {
+			app.exit(0);
+		}
+	});
+}
+
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+pub fn run() {
+	#[cfg(target_os = "linux")]
+	appearance::apply_environment_defaults();
+
+	api::update::enforce_home();
+	#[cfg(target_os = "macos")]
+	predecessor::adopt_data();
+
+	#[cfg(feature = "devtools")]
+	let devtools = tauri_plugin_devtools::init();
+
+	let mut context = tauri::generate_context!();
+	context.config_mut().app.android_hostname = app_origin::android_hostname();
+
+	let builder = tauri::Builder::default();
+
+	// Plugins run in registration order and this one must be first:
+	// https://github.com/tauri-apps/plugins-workspace/tree/v2/plugins/single-instance
+	#[cfg(desktop)]
+	let builder = builder.plugin(tauri_plugin_single_instance::init(
+		|app, _args, _cwd| focus_main_window(app),
+	));
+
+	#[cfg(feature = "devtools")]
+	let builder = builder.plugin(devtools);
+
+	#[cfg(target_os = "android")]
+	let builder = builder
+		.plugin(tauri_plugin_android_fs::init())
+		.plugin(photo::plugin())
+		.plugin(keyboard_media::plugin())
+		.plugin(media_drag::plugin())
+		.plugin(api::recaptcha::plugin())
+		.plugin(app_origin::android::plugin());
+
+	let builder = builder.plugin(api::push::plugin());
+
+	builder
+        .plugin(open_grind_platform_plugin())
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_clipboard_manager::init())
+        .plugin(tauri_plugin_os::init())
+        .plugin(tauri_plugin_geolocation::init())
+        .plugin(tauri_plugin_fs::init())
+        .plugin(tauri_plugin_opener::init())
+        .plugin(api::google_oauth::plugin())
+        .plugin(api::facebook_oauth::plugin())
+        .plugin(api::update::plugin())
+        .plugin(app_settings::plugin())
+        .plugin(media_picker::plugin())
+        .manage(upload::UploadLock::default())
+        .manage(media::MediaProxy::default())
+        .manage(api::session_recovery::SessionRecovery::default())
+        .manage(api::bubble::BubbleState::default())
+        .manage(api::secondary_sessions::SecondarySessions::default())
+        .register_asynchronous_uri_scheme_protocol(media::SCHEME, media::handle)
+        .invoke_handler(tauri::generate_handler![
+            api::auth::sign_in_with_email,
+            api::auth::sign_in_with_google,
+            api::auth::sign_in_with_google_token,
+            api::auth::backend_ready,
+            api::auth::google_handoff_pending,
+            api::auth::sign_in_with_google_handoff,
+            api::auth::discard_google_handoff,
+            api::auth::sign_in_with_facebook,
+            api::auth::refresh_session,
+            api::auth::sign_out,
+            api::auth::profile_list,
+            api::auth::profile_add,
+            api::bubble::bubble_show,
+            api::bubble::bubble_update,
+            api::bubble::bubble_take,
+            api::bubble::bubble_open,
+            api::bubble::bubble_close,
+            api::secondary_sessions::secondary_status,
+            api::auth::profile_switch,
+            api::auth::profile_scan_switch,
+            api::auth::profile_set_location,
+            api::ai_reply::ai_reply_draft,
+            api::ai_reply::apple_intelligence_status,
+            api::ai_reply::ai_reply_profile_is_active,
+            api::ai_reply::openrouter_api_key_status,
+            api::ai_reply::set_openrouter_api_key,
+            api::ai_reply::clear_openrouter_api_key,
+            api::auth::account_restriction,
+            api::auth::session_feature_flags,
+            api::auth::recaptcha_first_party_enabled,
+            api::recaptcha::mint_recaptcha_token,
+            api::push::push_addon_ready,
+            api::push::push_token,
+            api::push::push_delete_token,
+            api::push::push_notifications_enabled,
+            api::push::push_set_notifications_enabled,
+            api::push::push_dismiss_conversation,
+            api::push::push_shown_conversations,
+            api::push::push_open_notification_settings,
+            api::push::push_mode,
+            api::push::push_set_mode,
+            api::push::push_categories,
+            api::push::push_set_category,
+            api::push::push_open_category_settings,
+            api::push::push_notification_permission,
+            api::push::push_request_notification_permission,
+            api::push::push_notify,
+            api::push::push_take_deeplink,
+            api::push::push_deeplink_pending,
+            api::push::push_watch,
+            storage::storage_backend,
+            api::rest::request,
+            api::rest::fetch_external,
+            media::media_failure,
+            upload::bytes::upload_media,
+            upload::inspect::inspect_media_file,
+            upload::preview::preview_media,
+            upload::file::upload_media_file,
+            upload::staged::stage_media,
+            upload::staged::append_staged_media,
+            upload::staged::discard_staged_media,
+            upload::linked::stage_linked_media,
+            api::ws::ws_connect,
+            api::ws::ws_reconnect,
+            api::ws::ws_send,
+            api::client::rotate_api_params,
+            api::session_recovery::set_app_active,
+            api::session_recovery::current_session,
+            haptics::play_haptic,
+            scroll_phase::set_scroll_gesture_capture,
+            desktop_entry::desktop_entry_state,
+            desktop_entry::desktop_entry_install,
+            desktop_entry::desktop_entry_remove,
+            api::update::commands::updater_capability,
+            api::update::commands::updater_settings,
+            api::update::commands::updater_set_auto_check,
+            api::update::commands::updater_check,
+            api::update::commands::updater_download,
+            api::update::commands::updater_cancel_download,
+            api::update::commands::updater_progress,
+            api::update::commands::updater_readiness,
+            api::update::commands::updater_install,
+            api::update::commands::updater_install_pending,
+            api::update::commands::updater_installed_version,
+            api::update::commands::updater_take_install_outcome,
+            api::update::commands::updater_open_install_permission_settings,
+            api::update::commands::updater_discard,
+            app_settings::open_app_settings,
+            media_picker::pick_android_media,
+            appearance::backdrop_filter_renders,
+            appearance::webview_engine,
+            app_data::read_app_data,
+            app_data::write_app_data,
+            app_data::remove_app_data,
+        ])
+        .setup(|app| {
+            scroll_phase::install_scroll_gesture_bridge(app.handle());
+            #[cfg(target_os = "android")]
+            app_origin::android::prepare_served_origin(app.handle());
+            upload::staged::discard_all(app.handle());
+            let user_agent = format!(
+                "open-grind/{} (+https://opengrind.org/; contact: admin@opengrind.org)",
+                app.package_info().version
+            );
+            let deferred: Vec<_> = app
+                .config()
+                .app
+                .windows
+                .iter()
+                .filter(|window| !window.create)
+                .cloned()
+                .collect();
+            for window in deferred {
+                let builder =
+                    tauri::WebviewWindowBuilder::from_config(app.handle(), &window)?
+                        .user_agent(&user_agent)
+                        .on_navigation(|url| {
+                            app_origin::is_app_url(url, app_origin::SERVED_HOSTNAME)
+                        });
+                #[cfg(any(target_os = "macos", target_os = "windows"))]
+                let builder = builder.disable_drag_drop_handler();
+                #[cfg(target_os = "linux")]
+                let builder = builder.extensions_path(
+                    app.path().resource_dir()?.join(media::WEBKIT_EXTENSIONS),
+                );
+                let window = builder.build()?;
+                #[cfg(target_os = "linux")]
+                media::serve_element_opens(&window);
+                #[cfg(target_os = "linux")]
+                scroll_phase::follow_touchpad(&window);
+                appearance::unlock_visual_effects(&window);
+                context_menu::trim_native_menu(&window);
+                #[cfg(desktop)]
+                quit_when_closed(&window);
+            }
+
+            #[cfg(desktop)]
+            if let Some(message) = outdated_webview_notice() {
+                use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
+                app.dialog()
+                    .message(message)
+                    .title("WebView may be too old")
+                    .kind(MessageDialogKind::Warning)
+                    .show(|_| {});
+            }
+
+            #[cfg(any(
+                target_os = "linux",
+                all(
+                    target_os = "macos",
+                    not(feature = "keychain"),
+                    not(feature = "memory-storage")
+                )
+            ))]
+            storage::init_file_store(app.path().app_local_data_dir()?);
+
+            let backend = storage::init_keyring();
+            #[cfg(all(
+                target_os = "macos",
+                feature = "keychain",
+                not(feature = "memory-storage")
+            ))]
+            if backend == storage::StorageBackend::Keyring {
+                storage::adopt_legacy_items();
+            }
+            let openrouter_key_file = app
+                .path()
+                .app_local_data_dir()?
+                .join("secrets")
+                .join("openrouter-api-key");
+            let saved_openrouter_key = match OpenRouterKeyStorage::load() {
+                Ok(key) => key,
+                Err(error) => {
+                    tracing::warn!("[setup] could not load the OpenRouter key: {error}");
+                    None
+                }
+            };
+            app.manage(AppState::from_environment_file_and_keyring(
+                &openrouter_key_file,
+                saved_openrouter_key,
+            ));
+            app.manage(backend);
+
+            let saved_profiles = match ProfileStorage::load() {
+                Ok(profiles) => profiles,
+                Err(error) => {
+                    tracing::warn!("[setup] could not load profiles: {error}");
+                    Default::default()
+                }
+            };
+            let selected = saved_profiles.active_profile_id.as_deref().and_then(
+                |id| saved_profiles.profiles.iter().find(|p| p.profile_id == id),
+            );
+            let device = selected
+                .map(|profile| profile.device.clone())
+                .unwrap_or_else(DeviceStorage::load_or_create);
+            let credentials = selected.map(|profile| profile.credentials.clone()).or_else(
+                || match AuthStorage::get_credentials() {
+                    Ok(credentials) => credentials,
+                    Err(error) => {
+                        tracing::warn!(
+                            "[setup] could not load credentials: {error}"
+                        );
+                        None
+                    }
+                },
+            );
+            if selected.is_some() {
+                if let Some(credentials) = &credentials {
+                    if let Err(error) = AuthStorage::set_credentials(credentials) {
+                        tracing::warn!(
+                            "[setup] could not restore active credentials: {error}"
+                        );
+                    }
+                }
+                match selected.and_then(|profile| profile.signing_key.as_ref()) {
+                    Some(key) => {
+                        if let Err(error) = SigningKeyStorage::save(key) {
+                            tracing::warn!(
+                                "[setup] could not restore active signing key: {error}"
+                            );
+                        }
+                    }
+                    None => SigningKeyStorage::delete(),
+                }
+                if let Err(error) = DeviceStorage::save(&device) {
+                    tracing::warn!(
+                        "[setup] could not restore active device: {error}"
+                    );
+                }
+            }
+
+            let resumed = credentials.clone().map(|credentials| grindr::Session {
+                credentials,
+                token: None,
+            });
+            let client = state::share(|| {
+                grindr::GrindrClient::new(device, resumed)
+                    .expect("failed to build GrindrClient")
+            });
+            app.state::<AppState>().set_client(client.clone());
+            watch_client(app.handle().clone(), client);
+
+            api::ws::spawn_ws_task(app.handle().clone());
+
+            // Bring every other saved profile online in the background.
+            // Fire-and-forget: the main session must never wait for it.
+            {
+                let app = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    api::secondary_sessions::resync_all(&app).await;
+                });
+            }
+
+            Ok(())
+        })
+        .run(context)
+        .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+	#[test]
+	fn release_builds_discard_every_tracing_event() {
+		let expected = if cfg!(debug_assertions) {
+			tracing::level_filters::LevelFilter::TRACE
+		} else {
+			tracing::level_filters::LevelFilter::OFF
+		};
+		assert_eq!(tracing::level_filters::STATIC_MAX_LEVEL, expected);
+	}
+}
+
+#[cfg(test)]
+mod webview_floor_pins {
+	const THIS: &str = include_str!("lib.rs");
+	const TAURI_CONF: &str = include_str!("../tauri.conf.json");
+	const GRADLE: &str = include_str!("../gen/android/app/build.gradle.kts");
+	const APP_HTML: &str = include_str!("../../src/app.html");
+
+	fn numbers_after<'a>(
+		haystack: &'a str,
+		marker: &str,
+	) -> impl Iterator<Item = u32> + 'a {
+		let at = haystack.find(marker).expect(marker) + marker.len();
+		haystack[at..]
+			.split(|c: char| !c.is_ascii_digit())
+			.filter(|run| !run.is_empty())
+			.map(|run| run.parse().unwrap())
+	}
+
+	#[test]
+	fn every_webview_floor_names_the_same_chromium_major() {
+		let rust =
+			numbers_after(THIS, "const MIN_CHROMIUM_MAJOR: u32 =").next();
+		assert_eq!(
+			rust,
+			numbers_after(TAURI_CONF, "\"minimumWebview2Version\":").next()
+		);
+		assert_eq!(
+			rust,
+			numbers_after(GRADLE, "MIN_SUPPORTED_WEBVIEW_MAJOR\",").next()
+		);
+	}
+
+	#[test]
+	fn the_unsupported_page_names_the_webkitgtk_floor() {
+		let rust: Vec<u32> =
+			numbers_after(THIS, "const MIN_WEBKITGTK: (u32, u32) =")
+				.take(2)
+				.collect();
+		let page: Vec<u32> =
+			numbers_after(APP_HTML, "<code>webkit2gtk</code> (")
+				.take(2)
+				.collect();
+		assert_eq!(rust, page);
+	}
+}
+
+#[cfg(test)]
+mod frontend_method_pins {
+	const THIS: &str = include_str!("lib.rs");
+	const METHODS: &str = include_str!("../../src/lib/api/methods.ts");
+	const TRANSPORT: &str = include_str!("../../src/lib/api/transport.ts");
+
+	fn between<'a>(haystack: &'a str, open: &str, close: &str) -> &'a str {
+		let start = haystack.find(open).expect(open) + open.len();
+		let len = haystack[start..].find(close).expect(close);
+		&haystack[start..start + len]
+	}
+
+	fn registered_commands() -> Vec<&'static str> {
+		between(THIS, "tauri::generate_handler![", "])")
+			.split(',')
+			.filter_map(|entry| entry.trim().rsplit("::").next())
+			.collect()
+	}
+
+	#[test]
+	fn every_command_the_transport_invokes_is_registered() {
+		let registered = registered_commands();
+		let invoked: Vec<&str> = ["invoke(\"", "invokeRest(\""]
+			.into_iter()
+			.flat_map(|opener| TRANSPORT.split(opener).skip(1))
+			.filter_map(|rest| rest.split_once('"'))
+			.map(|(command, _)| command)
+			.collect();
+		assert!(invoked.contains(&"fetch_external"), "{invoked:?}");
+		for command in invoked {
+			assert!(
+				registered.contains(&command),
+				"{command} is invoked by transport.ts but not registered"
+			);
+		}
+	}
+
+	#[test]
+	fn every_frontend_method_is_a_registered_command() {
+		let registered = registered_commands();
+		let methods: Vec<&str> =
+			between(METHODS, "export const methods = {", "\n}")
+				.lines()
+				.filter_map(|line| line.strip_prefix('\t'))
+				.filter(|line| !line.starts_with(['\t', '}']))
+				.map(|line| line.split_once(':').expect(line).0)
+				.collect();
+		assert!(!methods.is_empty());
+		for method in methods {
+			assert!(
+				registered.contains(&method),
+				"{method} is called by the frontend but not registered"
+			);
+		}
+	}
+}
+
+#[cfg(test)]
+mod opener_scope_pins {
+	const CAPABILITY: &str = include_str!("../capabilities/default.json");
+
+	#[test]
+	fn the_system_browser_is_never_handed_an_app_origin() {
+		let capability: serde_json::Value =
+			serde_json::from_str(CAPABILITY).unwrap();
+		let denied: Vec<&str> = capability["permissions"]
+			.as_array()
+			.unwrap()
+			.iter()
+			.filter(|permission| {
+				permission["identifier"] == "opener:allow-open-url"
+			})
+			.flat_map(|permission| permission["deny"].as_array().unwrap())
+			.map(|scope| scope["url"].as_str().unwrap())
+			.collect();
+		let android_origin =
+			format!("https://{}", crate::app_origin::ANDROID_HOSTNAME);
+		for origin in [
+			"http://tauri.localhost",
+			"https://tauri.localhost",
+			&android_origin,
+			"http://ogmedia.localhost",
+			"https://ogmedia.localhost",
+			"http://localhost",
+			"http://127.0.0.1",
+		] {
+			assert!(
+				denied.contains(&format!("{origin}*").as_str()),
+				"{origin} can still be opened in the system browser"
+			);
+		}
+	}
+}

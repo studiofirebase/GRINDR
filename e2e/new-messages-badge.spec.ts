@@ -1,0 +1,132 @@
+import { expect, type Page, test } from "@playwright/test";
+
+import {
+	DEMO_CONVERSATION,
+	DEMO_CONVERSATION_ID,
+	emitMessageSent,
+	flownIn,
+	installEventInjection,
+	installTauriShim,
+	MESSAGE_ROW,
+} from "./support/app";
+
+const THEM = 100001;
+const MESSAGE = '[data-slot="message"]';
+const SCROLLER = '[data-slot="messages-scroller"]';
+const SCROLL_DOWN = '[aria-label="Scroll to newest messages"]';
+const BADGE = `${SCROLL_DOWN} + [data-slot="badge"]`;
+
+function peerText(timestamp: number) {
+	return {
+		type: "Text",
+		body: { text: `late arrival ${timestamp}` },
+		messageId: `ws-in-${timestamp}`,
+		conversationId: DEMO_CONVERSATION_ID,
+		senderId: THEM,
+		timestamp,
+		unsent: false,
+		reactions: [],
+		replyToMessage: null,
+	};
+}
+
+async function scrollAwayFromFloor(page: Page): Promise<void> {
+	await page.locator(SCROLLER).evaluate((el) => {
+		el.scrollTop = 0;
+	});
+	await expect(page.locator(SCROLL_DOWN)).toBeVisible();
+}
+
+// A message counts as seen, and gets a read receipt, the moment its
+// IntersectionObserver reports it. That observer roots itself at the nearest
+// scrolling ancestor, so any scroller wrapped around a message silently
+// becomes the frame it is judged against — and a message the reader never
+// reached would report itself read.
+test("a message is judged visible against the conversation, not a box of its own", async ({
+	page,
+}) => {
+	await installTauriShim(page);
+	await page.goto(DEMO_CONVERSATION);
+	await page.locator(MESSAGE_ROW).first().waitFor({ timeout: 60_000 });
+
+	const rooting = await page.evaluate(
+		({ message, scroller }) => {
+			const scrolls = (el: Element) => {
+				const { overflowY } = getComputedStyle(el);
+				return overflowY === "auto" || overflowY === "scroll";
+			};
+			return [...document.querySelectorAll(message)].map((observed) => {
+				let el = observed.parentElement;
+				while (el && !scrolls(el)) el = el.parentElement;
+				return {
+					rootedAtScroller: el?.matches(scroller) ?? false,
+					rootTag: el
+						? `${el.tagName.toLowerCase()}.${el.className}`
+						: "none",
+				};
+			});
+		},
+		{ message: MESSAGE, scroller: SCROLLER },
+	);
+
+	expect(rooting.length).toBeGreaterThan(0);
+	for (const { rootedAtScroller, rootTag } of rooting) {
+		expect(
+			rootedAtScroller,
+			`a message is measured against ${rootTag} instead of the conversation scroller`,
+		).toBe(true);
+	}
+});
+
+test("the scroll-down button rides above the composer at the list's trailing edge", async ({
+	page,
+}) => {
+	await installTauriShim(page);
+	await page.goto(DEMO_CONVERSATION);
+	await page.locator(MESSAGE_ROW).first().waitFor({ timeout: 60_000 });
+
+	await scrollAwayFromFloor(page);
+	await flownIn(page, SCROLL_DOWN);
+
+	const placement = await page.evaluate(
+		({ button, scroller }) => {
+			const glass = document.querySelector(button)?.parentElement;
+			const list = document.querySelector(scroller);
+			const composer = document.querySelector("form");
+			if (!glass || !list || !composer)
+				throw new Error("scroll-down button, list or composer missing");
+			const control = glass.getBoundingClientRect();
+			return {
+				gapAboveComposer:
+					composer.getBoundingClientRect().top - control.bottom,
+				gapFromTrailingEdge:
+					list.getBoundingClientRect().right - control.right,
+			};
+		},
+		{ button: SCROLL_DOWN, scroller: SCROLLER },
+	);
+
+	expect(placement.gapAboveComposer).toBeCloseTo(12, 0);
+	expect(placement.gapFromTrailingEdge).toBeCloseTo(12, 0);
+});
+
+test("a message arriving while scrolled away badges the scroll-down button until the floor is revisited", async ({
+	page,
+}) => {
+	await installTauriShim(page);
+	await installEventInjection(page);
+	await page.goto(DEMO_CONVERSATION);
+	await page.locator(MESSAGE_ROW).first().waitFor({ timeout: 60_000 });
+
+	await scrollAwayFromFloor(page);
+	await expect(page.locator(BADGE)).toHaveCount(0);
+
+	await emitMessageSent(page, peerText(Date.now()));
+	await expect(page.locator(BADGE)).toHaveText("1");
+
+	await page.locator(SCROLL_DOWN).click();
+	await expect(page.locator(SCROLL_DOWN)).toBeHidden();
+
+	await scrollAwayFromFloor(page);
+	await expect(page.locator(BADGE)).toHaveCount(0);
+});

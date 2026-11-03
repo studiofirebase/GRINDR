@@ -1,0 +1,13 @@
+{
+	"$schema": "../gen/schemas/android-schema.json",
+	"identifier": "android-capability",
+	"windows": [
+		"main"
+	],
+	"platforms": [
+		"android"
+	],
+	"permissions": [
+		"android-fs:allow-show-open-file-picker"
+	]
+}

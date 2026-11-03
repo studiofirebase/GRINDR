@@ -1,0 +1,109 @@
+name: publish-apt
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to publish
+        type: string
+        required: true
+
+concurrency:
+  group: open-grind-publish-apt
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ["debian", "2c4g", "hetzner"]
+    timeout-minutes: 20
+    env:
+      TAG: ${{ forgejo.event.inputs.tag || forgejo.event.release.tag_name }}
+      API: ${{ forgejo.server_url }}/api/v1/repos/${{ forgejo.repository }}
+      REGISTRY: ${{ forgejo.server_url }}/api/packages/open-grind/debian
+      PACKAGES_TOKEN: ${{ secrets.PACKAGES_TOKEN }}
+    steps:
+      - name: Install the verification tools
+        run: |
+          if command -v jq >/dev/null && command -v minisign >/dev/null; then
+            exit 0
+          fi
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get -qq update </dev/null >/tmp/apt.log 2>&1 || true
+          apt-get -qq install -y --no-install-recommends jq minisign \
+            </dev/null >>/tmp/apt.log 2>&1 || true
+          if ! command -v jq >/dev/null || ! command -v minisign >/dev/null; then
+            cat /tmp/apt.log >&2
+            exit 1
+          fi
+      - name: Check the token
+        run: |
+          echo "==> check-token"
+          test -n "$PACKAGES_TOKEN" || {
+            echo "PACKAGES_TOKEN is unset; create a token with write:package scope" >&2
+            exit 1
+          }
+      - name: Fetch the release
+        run: |
+          echo "==> fetch-release"
+          curl -fsSL "$API/releases/tags/$TAG" -o release.json
+          jq -r 'if .prerelease then "beta" else "stable" end' release.json > suite
+          jq -r '.assets[].browser_download_url' release.json > assets
+          grep -E '\.deb$' assets > debs || {
+            echo "release $TAG publishes no .deb" >&2
+            exit 1
+          }
+      - name: Download and verify
+        run: |
+          echo "==> download-verify"
+          curl -fsSL "$API/raw/KEYS.md" -o KEYS.md
+          key=$(awk '{ sub(/\r$/, "") } /^RW/ && length($0) == 56 { print; exit }' KEYS.md)
+          test -n "$key" || { echo "KEYS.md publishes no minisign key" >&2; exit 1; }
+          while read -r url; do
+            deb=$(basename "$url")
+            curl -fsSL "$url" -o "$deb"
+            curl -fsSL "$url.minisig" -o "$deb.minisig"
+            minisign -Vm "$deb" -P "$key"
+          done < debs
+      - name: Refuse versions apt would not upgrade to
+        run: |
+          echo "==> check-order"
+          target=$(cat suite)
+          while read -r url; do
+            deb=$(basename "$url")
+            version=$(dpkg-deb -f "$deb" Version)
+            arch=$(dpkg-deb -f "$deb" Architecture)
+            for suite in beta stable; do
+              code=$(curl -sS -o Packages -w '%{http_code}' "$REGISTRY/dists/$suite/main/binary-$arch/Packages")
+              case "$code" in
+                200) ;;
+                404) continue ;;
+                *) echo "fetching the $suite index for $arch failed with HTTP $code" >&2; exit 1 ;;
+              esac
+              sed -n 's/^Version: //p' Packages > published
+              while read -r other; do
+                # users switching suites carry the same or older lines, while a stable
+                # patch (0.1.1) may sort below a newer line's prerelease (0.2.0~rc.1)
+                [ "$suite" = "$target" ] \
+                  || dpkg --compare-versions "${other%%[-~+]*}" le "${version%%[-~+]*}" \
+                  || continue
+                dpkg --compare-versions "$version" ge "$other" || {
+                  echo "$deb ($version) sorts below $other in $suite, so apt would never upgrade to it" >&2
+                  exit 1
+                }
+              done < published
+            done
+          done < debs
+      - name: Upload to the Debian registry
+        run: |
+          echo "==> upload"
+          suite=$(cat suite)
+          while read -r url; do
+            deb=$(basename "$url")
+            curl -sS --fail-with-body \
+              -H "Authorization: token $PACKAGES_TOKEN" \
+              --upload-file "$deb" \
+              "$REGISTRY/pool/$suite/main/upload"
+            echo "published $deb to $suite/main"
+          done < debs

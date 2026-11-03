@@ -1,0 +1,14 @@
+{
+	"manifest_version": 3,
+	"name": "Open Grind Google Login",
+	"version": "1.0.0",
+	"description": "Conclui o login Google do Open Grind (meuprofile.com) a partir de web.grindr.com.",
+	"content_scripts": [
+		{
+			"matches": ["https://web.grindr.com/*"],
+			"js": ["content.js"],
+			"run_at": "document_idle",
+			"world": "MAIN"
+		}
+	]
+}
