@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { beginBackgroundSessionSwap } from "$lib/api/background-session-swap";
+
 const { fetchRestMock, sendCommandMock } = vi.hoisted(() => ({
 	fetchRestMock: vi.fn(),
 	sendCommandMock: vi.fn(),
@@ -412,5 +414,60 @@ describe("message API wrappers", () => {
 			method: "POST",
 			body: { conversationId: "conversation-1", messageId: "msg-1" },
 		});
+	});
+});
+
+describe("message sends during background session swaps", () => {
+	function textMessage() {
+		return { type: "Text", body: { text: "hello" } } as const;
+	}
+
+	it("waits for the visible session to be back before sending", async () => {
+		fetchRestMock.mockResolvedValue(response({ data: apiMessage() }));
+		const endSwap = beginBackgroundSessionSwap();
+		try {
+			const pending = sendMessage({
+				toUserId: 99,
+				message: textMessage(),
+			});
+			await new Promise((resolve) => setTimeout(resolve, 20));
+			expect(fetchRestMock).not.toHaveBeenCalled();
+			endSwap();
+			await pending;
+			expect(fetchRestMock).toHaveBeenCalledTimes(1);
+		} finally {
+			endSwap();
+		}
+	});
+
+	it("sends at once when its session guard holds mid-swap", async () => {
+		fetchRestMock.mockResolvedValue(response({ data: apiMessage() }));
+		const endSwap = beginBackgroundSessionSwap();
+		try {
+			await sendMessage({
+				toUserId: 99,
+				message: textMessage(),
+				sessionGuard: () => Promise.resolve(true),
+			});
+			expect(fetchRestMock).toHaveBeenCalledTimes(1);
+		} finally {
+			endSwap();
+		}
+	});
+
+	it("refuses to send when its session guard fails mid-swap", async () => {
+		const endSwap = beginBackgroundSessionSwap();
+		try {
+			await expect(
+				sendMessage({
+					toUserId: 99,
+					message: textMessage(),
+					sessionGuard: () => Promise.resolve(false),
+				}),
+			).rejects.toThrow();
+			expect(fetchRestMock).not.toHaveBeenCalled();
+		} finally {
+			endSwap();
+		}
 	});
 });

@@ -2,12 +2,18 @@ import { cleanup, render } from "@testing-library/svelte";
 import { createRawSnippet } from "svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const { restoreStrandedLocationMock } = vi.hoisted(() => ({
-	restoreStrandedLocationMock: vi.fn<() => Promise<void>>(),
-}));
+const { restoreStrandedLocationMock, scanUnreadAutomaticRepliesMock } =
+	vi.hoisted(() => ({
+		restoreStrandedLocationMock: vi.fn<() => Promise<void>>(),
+		scanUnreadAutomaticRepliesMock:
+			vi.fn<(profileId: number) => Promise<void>>(),
+	}));
 
 vi.mock("$lib/entitlements/honduras-hold", () => ({
 	restoreStrandedLocation: restoreStrandedLocationMock,
+}));
+vi.mock("$lib/chat/automatic-replies", () => ({
+	scanUnreadAutomaticRepliesAtStartup: scanUnreadAutomaticRepliesMock,
 }));
 vi.mock("$lib/presence/online-heartbeat", () => ({
 	startOnlineHeartbeat: () => () => {},
@@ -25,6 +31,7 @@ const children = createRawSnippet(() => ({ render: () => "<p>page</p>" }));
 
 beforeEach(() => {
 	vi.clearAllMocks();
+	scanUnreadAutomaticRepliesMock.mockResolvedValue(undefined);
 });
 
 afterEach(() => {
@@ -32,12 +39,19 @@ afterEach(() => {
 });
 
 describe("(protected) layout", () => {
-	it("moves a profile left away from home back once the app opens", () => {
+	it("checks saved profiles before restoring the home location", async () => {
 		restoreStrandedLocationMock.mockResolvedValue(undefined);
 
-		render(ProtectedLayout, { props: { children } });
+		render(ProtectedLayout, {
+			props: { children, data: { ourProfileId: 42 }, params: {} },
+		});
 
-		expect(restoreStrandedLocationMock).toHaveBeenCalledOnce();
+		await vi.waitFor(() =>
+			expect(restoreStrandedLocationMock).toHaveBeenCalledOnce(),
+		);
+		expect(scanUnreadAutomaticRepliesMock).toHaveBeenCalledExactlyOnceWith(
+			42,
+		);
 	});
 
 	it("logs a repair that fails instead of leaving it unhandled", async () => {
@@ -47,7 +61,9 @@ describe("(protected) layout", () => {
 			.spyOn(console, "error")
 			.mockImplementation(() => {});
 
-		render(ProtectedLayout, { props: { children } });
+		render(ProtectedLayout, {
+			props: { children, data: { ourProfileId: 42 }, params: {} },
+		});
 
 		await vi.waitFor(() =>
 			expect(consoleError).toHaveBeenCalledWith(

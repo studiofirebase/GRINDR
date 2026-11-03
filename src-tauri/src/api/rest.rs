@@ -91,7 +91,7 @@ pub async fn request(
 	let raw = request
 		.send()
 		.await
-		.map_err(|e| AppError::from_client_error(e, client))?;
+		.map_err(|e| AppError::from_client_error(e, &client))?;
 
 	encode_response(&RawResponse {
 		status: raw.status,
@@ -116,7 +116,7 @@ pub async fn fetch_external(
 			fetcher: grindr::MediaFetcher::Plain,
 		})
 		.await
-		.map_err(|e| AppError::from_client_error(e, client))?;
+		.map_err(|e| AppError::from_client_error(e, &client))?;
 
 	encode_response(&RawResponse {
 		status: response.status,

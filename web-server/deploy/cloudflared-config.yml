@@ -1,0 +1,15 @@
+tunnel: 171b0f11-a74a-479a-b270-27d70fe0759a
+credentials-file: /etc/cloudflared/credentials.json
+protocol: http2
+no-autoupdate: true
+
+ingress:
+  - hostname: meuprofile.com
+    service: http://app:8787
+    originRequest:
+      access:
+        required: true
+        teamName: italosantos
+        audTag:
+          - 20a6c3f15456d5b7b55be13502705f928349acf0f5e424511eb7fc21e8352fb6
+  - service: http_status:404

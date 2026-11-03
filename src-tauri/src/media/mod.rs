@@ -241,9 +241,7 @@ mod tests {
 	pub(super) fn app_without_a_client() -> tauri::App<MockRuntime> {
 		mock_builder()
 			.manage(MediaProxy::default())
-			.manage(AppState {
-				client: OnceLock::new(),
-			})
+			.manage(AppState::default())
 			.build(mock_context(noop_assets()))
 			.expect("mock app")
 	}

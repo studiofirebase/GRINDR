@@ -12,15 +12,21 @@ import {
 } from "$lib/platform/back-gesture-event.svelte";
 import { ComposerSheetsState } from "./composer-sheets-state.svelte";
 
-const { conversations, composerSheets, conversationState } = vi.hoisted(() => ({
-	conversations: { drafts: null as Drafts | null },
-	composerSheets: { current: null as ComposerSheetsState | null },
-	conversationState: { conversationId: "a:1" },
-}));
+const { conversations, composerSheets, conversationState, desktopPlatform } =
+	vi.hoisted(() => ({
+		conversations: { drafts: null as Drafts | null },
+		composerSheets: { current: null as ComposerSheetsState | null },
+		conversationState: { conversationId: "a:1" },
+		desktopPlatform: { current: false },
+	}));
 
 vi.mock("$app/navigation", () => ({ onNavigate: vi.fn() }));
 vi.mock("$lib/chat/conversations-context.svelte", () => ({
 	getConversations: () => conversations,
+}));
+vi.mock("$lib/platform/os", async (importOriginal) => ({
+	...(await importOriginal<typeof import("$lib/platform/os")>()),
+	isDesktopPlatform: () => desktopPlatform.current,
 }));
 vi.mock("./send-media/send-media-offer.svelte", () => ({
 	getSendMediaOffer: () => ({ lend: () => {}, offer: async () => {} }),
@@ -65,22 +71,30 @@ let sheets: ComposerSheetsState;
 beforeEach(() => {
 	sheets = new ComposerSheetsState();
 	composerSheets.current = sheets;
+	desktopPlatform.current = false;
 });
 
 function renderComposer({
 	conversationId = A,
 	onSend = () => {},
+	onSuggestReply = () => Promise.resolve("AI response"),
+	canSuggestReply = true,
 	replyTo = null,
 	onCancelReply = () => {},
 }: {
 	conversationId?: string;
 	onSend?: (drafts: unknown) => void | Promise<void>;
+	onSuggestReply?: () => Promise<string>;
+	canSuggestReply?: boolean;
 	replyTo?: unknown;
 	onCancelReply?: () => void;
 } = {}) {
 	const result = render(MessageComposer, {
 		props: {
 			conversationId,
+			ourProfileId: 42,
+			onSuggestReply,
+			canSuggestReply,
 			onSend,
 			disabled: false,
 			replyTo,
@@ -98,6 +112,7 @@ describe("MessageComposer drafts", () => {
 	beforeEach(() => {
 		drafts = new Drafts();
 		conversations.drafts = drafts;
+		desktopPlatform.current = false;
 	});
 
 	afterEach(cleanup);
@@ -203,12 +218,67 @@ describe("MessageComposer drafts", () => {
 			draftFromMessage({ type: "Text", body: { text: "sending this" } }),
 		]);
 	});
+
+	it("generates and sends an AI reply instead of placing it in the composer", async () => {
+		desktopPlatform.current = true;
+		const onSuggestReply = vi.fn(() => Promise.resolve("  AI response  "));
+		const onSend = vi.fn();
+		const { getByRole, textarea } = renderComposer({
+			onSuggestReply,
+			onSend,
+		});
+
+		await fireEvent.click(
+			getByRole("button", {
+				name: "Generate and send a reply with OpenRouter AI",
+			}),
+		);
+		await waitFor(() =>
+			expect(onSend).toHaveBeenCalledWith([
+				draftFromMessage({
+					type: "Text",
+					body: { text: "AI response" },
+				}),
+			]),
+		);
+
+		expect(onSuggestReply).toHaveBeenCalledOnce();
+		expect(textarea.value).toBe("");
+	});
+
+	it("does not send an empty or stale AI reply", async () => {
+		desktopPlatform.current = true;
+		const onSend = vi.fn();
+		const onSuggestReply = vi.fn(() => Promise.resolve(""));
+		const { getByRole } = renderComposer({ onSuggestReply, onSend });
+
+		await fireEvent.click(
+			getByRole("button", {
+				name: "Generate and send a reply with OpenRouter AI",
+			}),
+		);
+		await waitFor(() => expect(onSuggestReply).toHaveBeenCalledOnce());
+
+		expect(onSend).not.toHaveBeenCalled();
+	});
+
+	it("disables Send with AI until there is a new incoming text", () => {
+		desktopPlatform.current = true;
+		const { getByRole } = renderComposer({ canSuggestReply: false });
+		const button = getByRole("button", {
+			name: "Generate and send a reply with OpenRouter AI",
+		}) as HTMLButtonElement;
+
+		expect(button.disabled).toBe(true);
+		expect(button.title).toContain("Wait for an incoming text message");
+	});
 });
 
 describe("MessageComposer reply bar", () => {
 	beforeEach(() => {
 		drafts = new Drafts();
 		conversations.drafts = drafts;
+		desktopPlatform.current = false;
 	});
 
 	afterEach(cleanup);
@@ -341,6 +411,7 @@ describe("MessageComposer sheet triggers", () => {
 	beforeEach(() => {
 		drafts = new Drafts();
 		conversations.drafts = drafts;
+		desktopPlatform.current = false;
 	});
 
 	afterEach(cleanup);

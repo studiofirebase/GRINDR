@@ -1,5 +1,10 @@
 import z from "zod";
 
+import {
+	awaitBackgroundSwapEnd,
+	backgroundSessionSwapInFlight,
+	swapSettleWaitMs,
+} from "$lib/api/background-session-swap";
 import { errorUrnFromBody } from "$lib/api/error-urn";
 import { fetchRest } from "$lib/api/transport";
 import { demoEnabled, demoSentMessage } from "$lib/demo";
@@ -90,15 +95,48 @@ export async function refreshMessagesById({
 	);
 }
 
+/**
+ * Waits out a background session swap before touching the backend as the
+ * visible session. The scan owns the backend mid-swap, so acting now would
+ * run as another profile.
+ */
+async function settledSessionOrThrow(action: string): Promise<void> {
+	if (
+		backgroundSessionSwapInFlight() &&
+		!(await awaitBackgroundSwapEnd(swapSettleWaitMs))
+	) {
+		throw new Error(`The app is finishing a background sync; ${action}.`);
+	}
+}
+
 export async function sendMessage({
 	toUserId,
 	message: outbound,
 	replyToMessageId,
+	sessionGuard,
 }: {
 	toUserId: number;
 	message: MessageDraft["outbound"];
 	replyToMessageId?: string;
+	/**
+	 * Verified by callers that already switched the backend to their own
+	 * session (the background AI sync). Without it, sends wait for the
+	 * visible session to be back: peer-addressed sends go out as whoever
+	 * the backend currently is.
+	 */
+	sessionGuard?: () => Promise<boolean>;
 }) {
+	if (backgroundSessionSwapInFlight()) {
+		if (sessionGuard !== undefined) {
+			if (!(await sessionGuard())) {
+				throw new Error(
+					"The visible session changed while sending; try again.",
+				);
+			}
+		} else {
+			await settledSessionOrThrow("try sending again");
+		}
+	}
 	const message =
 		typeof outbound === "function" ? await outbound() : outbound;
 	const body = {
@@ -132,6 +170,7 @@ export async function reactToMessage({
 	messageId: ApiResponseMessage["messageId"];
 	reactionType: number;
 }) {
+	await settledSessionOrThrow("try reacting again");
 	return await fetchRest("/v4/chat/message/reaction", {
 		method: "POST",
 		body: { conversationId, messageId, reactionType },
@@ -145,6 +184,7 @@ export async function deleteMessageForMe({
 	conversationId: Conversation["data"]["conversationId"];
 	messageId: ApiResponseMessage["messageId"];
 }) {
+	await settledSessionOrThrow("try deleting again");
 	return await fetchRest(`/v4/chat/message/delete`, {
 		method: "POST",
 		body: { conversationId, messageId },
@@ -158,6 +198,7 @@ export async function unsendMessage({
 	conversationId: Conversation["data"]["conversationId"];
 	messageId: ApiResponseMessage["messageId"];
 }) {
+	await settledSessionOrThrow("try unsending again");
 	return await fetchRest(`/v4/chat/message/unsend`, {
 		method: "POST",
 		body: { conversationId, messageId },

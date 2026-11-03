@@ -242,6 +242,7 @@
 		<ScrollToTopButton {container} class="bottom-(--nav-clear)" />
 		<ConversationsFilters
 			filters={conversations.filters}
+			ourProfileId={conversations.ourProfileId}
 			onchange={(values) => conversations.setFilters(values)}
 			inert={selecting}
 			locked={filtersLocked}

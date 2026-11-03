@@ -9,7 +9,8 @@ import type { Profile } from "$lib/model/users/profiles";
 const OUR_ID = 100;
 const OTHER_ID = 200;
 
-const { getProfileMock, page } = vi.hoisted(() => ({
+const { callMethodMock, getProfileMock, page } = vi.hoisted(() => ({
+	callMethodMock: vi.fn(() => Promise.resolve([])),
 	getProfileMock: vi.fn<(profileId: number) => Promise<Profile>>(),
 	page: {
 		url: new URL("https://app.test/settings"),
@@ -19,6 +20,7 @@ const { getProfileMock, page } = vi.hoisted(() => ({
 
 vi.mock("$app/navigation", () => ({ goto: vi.fn() }));
 vi.mock("$app/state", () => ({ page }));
+vi.mock("$lib/api/methods", () => ({ callMethod: callMethodMock }));
 vi.mock("$lib/api/users/profiles", async (importOriginal) => ({
 	...(await importOriginal<typeof import("$lib/api/users/profiles")>()),
 	getProfile: getProfileMock,
@@ -71,6 +73,7 @@ async function renderedAvatar(container: HTMLElement): Promise<string | null> {
 
 beforeEach(() => {
 	getProfileMock.mockReset();
+	callMethodMock.mockReset().mockResolvedValue([]);
 });
 
 afterEach(() => cleanup());

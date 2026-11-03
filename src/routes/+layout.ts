@@ -4,12 +4,14 @@ import { getPreferences } from "$lib/app-data/preferences.svelte";
 import { hydrateDesktopEntryState } from "$lib/platform/desktop-entry.svelte";
 import { updatesAvailableHere } from "$lib/updates";
 import { hydrateUpdateCapability } from "$lib/updates/capability.svelte";
+import { installWebBridge } from "$lib/web/bridge";
 import type { LayoutLoad } from "./$types";
 
 export const ssr = false;
 export const csr = true;
 
 export const load: LayoutLoad = async ({ url }) => {
+	await installWebBridge();
 	await hydrateUpdateCapability();
 	await hydrateDesktopEntryState();
 	const onboardingComplete =

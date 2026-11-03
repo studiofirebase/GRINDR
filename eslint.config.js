@@ -1,5 +1,6 @@
 import { sveltekit } from "@opengrind/config/eslint/svelte";
 import { defineConfig } from "eslint/config";
+import ts from "typescript-eslint";
 
 import svelteConfig from "./svelte.config.js";
 
@@ -17,8 +18,11 @@ export default defineConfig(
 			"scripts/",
 			"ci/",
 			"e2e/updater/",
+			"web-server/",
+			"**/target/**",
 		],
 	}),
+	{ files: ["src/service-worker.ts"], ...ts.configs.disableTypeChecked },
 	{
 		rules: {
 			"@typescript-eslint/no-restricted-imports": [

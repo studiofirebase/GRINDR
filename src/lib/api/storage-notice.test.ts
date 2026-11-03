@@ -46,6 +46,15 @@ describe("noticeStorageBackend", () => {
 		expect(toastErrorMock).not.toHaveBeenCalled();
 	});
 
+	it("explains that a memory-only session ends when the app closes", async () => {
+		await noticeWith("memory");
+		expect(toastWarningMock).toHaveBeenCalledOnce();
+		expect(toastWarningMock.mock.calls[0]?.[0]).toContain(
+			"Existing Keychain items are untouched",
+		);
+		expect(toastErrorMock).not.toHaveBeenCalled();
+	});
+
 	it("stays quiet about the file store off Linux, where it is the build's own choice", async () => {
 		platformMock.mockReturnValue("macos");
 		await noticeWith("file");

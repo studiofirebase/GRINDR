@@ -5,6 +5,12 @@ import z from "zod";
 import { noticeAccountStatusError } from "$lib/api/account-status-state.svelte";
 import { ApiError, type ApiErrorKind } from "$lib/api/api-error";
 import {
+	awaitBackgroundSwapEnd,
+	backgroundSessionSwapInFlight,
+	nextRequestSequence,
+	requestPredatesSwap,
+} from "$lib/api/background-session-swap";
+import {
 	asAppError,
 	blockedKindOf,
 	markRequestBlocked,
@@ -168,7 +174,10 @@ function restInvokeError({
 			});
 		}
 	}
-	if (appError?.kind === "NotSignedIn") {
+	if (appError?.kind === "NotSignedIn" && !backgroundSessionSwapInFlight()) {
+		// While a background scan owns the backend session, NotSignedIn is
+		// expected (the session belongs to another saved profile for a few
+		// seconds) and must never trigger a sign-out.
 		signOutIfSessionLost().catch((error) => console.error(error));
 	}
 	return new ApiError({
@@ -182,16 +191,36 @@ function restInvokeError({
 	});
 }
 
+// A request that started before a background session swap and failed with
+// NotSignedIn most likely raced the swap, not a real sign-out: wait for the
+// session to settle and try once more before surfacing the error.
+const swapSettleWaitMs = 20_000;
+
 // https://github.com/tauri-apps/tauri/issues/10573
 export async function invokeRest(
 	command: string,
 	options: { args: Record<string, unknown>; requestInfo: RequestInfo },
 ) {
 	const { requestInfo } = options;
+	const sequence = nextRequestSequence();
 	try {
 		const encoded = await invoke(command, options.args);
 		return decodeRestResponse({ encoded, requestInfo });
 	} catch (error) {
+		// Only requests that started before the swap can have raced it;
+		// requests issued by the scan itself must fail fast instead.
+		if (
+			asAppError(error)?.kind === "NotSignedIn" &&
+			requestPredatesSwap(sequence)
+		) {
+			await awaitBackgroundSwapEnd(swapSettleWaitMs);
+			try {
+				const encoded = await invoke(command, options.args);
+				return decodeRestResponse({ encoded, requestInfo });
+			} catch (retryError) {
+				throw restInvokeError({ error: retryError, requestInfo });
+			}
+		}
 		throw restInvokeError({ error, requestInfo });
 	}
 }

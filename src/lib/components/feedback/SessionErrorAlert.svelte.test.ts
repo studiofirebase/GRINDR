@@ -178,6 +178,29 @@ describe("SessionErrorAlert", () => {
 		expect(sessionErrorState.open).toBe(false);
 	});
 
+	it("ignores refresh failures while a background scan owns the session", async () => {
+		const { beginBackgroundSessionSwap } =
+			await import("$lib/api/background-session-swap");
+		sessionErrorState.open = false;
+		render(SessionErrorAlert);
+
+		const endSwap = beginBackgroundSessionSwap();
+		try {
+			emit("auth:session-error", {
+				message: "Session expired",
+				unauthorized: true,
+				kind: "Unauthorized",
+				attempts: 0,
+			});
+			await settle();
+
+			expect(signOutMock).not.toHaveBeenCalled();
+			expect(sessionErrorState.open).toBe(false);
+		} finally {
+			endSwap();
+		}
+	});
+
 	it("does not raise a dialog for an unreachable network", async () => {
 		sessionErrorState.open = false;
 		render(SessionErrorAlert);

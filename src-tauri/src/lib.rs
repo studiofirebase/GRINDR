@@ -29,12 +29,13 @@ mod storage;
 mod upload;
 mod video;
 
-use std::sync::OnceLock;
-
 use tauri::Manager;
 
 use crate::state::AppState;
-use crate::storage::{AuthStorage, DeviceStorage, SigningKeyStorage};
+use crate::storage::{
+	AuthStorage, DeviceStorage, OpenRouterKeyStorage, ProfileStorage,
+	SavedProfile, SigningKeyStorage,
+};
 
 #[cfg(target_os = "windows")]
 const MIN_CHROMIUM_MAJOR: u32 = 111;
@@ -42,6 +43,148 @@ const MIN_CHROMIUM_MAJOR: u32 = 111;
 const MIN_WEBKITGTK: (u32, u32) = (2, 42);
 
 pub(crate) const MAIN_WINDOW_LABEL: &str = "main";
+
+pub(crate) fn watch_client(
+	app: tauri::AppHandle,
+	client: grindr::GrindrClient,
+) {
+	{
+		let client = client.clone();
+		let handle = app.clone();
+		let mut session_rx = client.session_receiver();
+		let mut stored =
+			session_rx.borrow().as_ref().map(|s| s.credentials.clone());
+		let mut restriction = None;
+		let task = tauri::async_runtime::spawn(async move {
+			if let Some(credentials) = stored.clone() {
+				persist_profile(&client, credentials, true).await;
+			}
+			while session_rx.changed().await.is_ok() {
+				let (next, next_restriction) = {
+					let session = session_rx.borrow();
+					(
+						session.as_ref().map(|s| s.credentials.clone()),
+						session.as_ref().and_then(|s| {
+							s.token.as_ref()?.restriction.clone()
+						}),
+					)
+				};
+				if next_restriction != restriction {
+					if let Some(r) = &next_restriction {
+						use tauri::Emitter;
+						handle
+							.emit(
+								"auth:restriction",
+								api::auth::Restriction::from(r.clone()),
+							)
+							.ok();
+					}
+					restriction = next_restriction;
+				}
+				if next == stored {
+					continue;
+				}
+				match &next {
+					Some(credentials) => {
+						if let Err(error) =
+							AuthStorage::set_credentials(credentials)
+						{
+							tracing::error!(
+								"[session] persist failed: {error}"
+							);
+						}
+						persist_profile(&client, credentials.clone(), true)
+							.await;
+						// A new sign-in (or a profile switch landing here) may
+						// have added background candidates: reconcile without
+						// blocking this watch loop.
+						let resync_app = handle.clone();
+						tauri::async_runtime::spawn(async move {
+							api::secondary_sessions::resync_all(&resync_app)
+								.await;
+						});
+					}
+					None => AuthStorage::delete_credentials(),
+				}
+				stored = next;
+			}
+		});
+		app.state::<AppState>().keep_task(task);
+	}
+
+	{
+		let mut key_rx = client.signing_key_receiver();
+		let task = tauri::async_runtime::spawn(async move {
+			SigningKeyStorage::restore(&client).await;
+			while key_rx.changed().await.is_ok() {
+				let key = { key_rx.borrow().clone() };
+				match key {
+					Some(key) => {
+						if let Err(error) = SigningKeyStorage::save(&key) {
+							tracing::error!(
+								"[signing] persist failed: {error}"
+							);
+						}
+						let credentials = {
+							client
+								.session_receiver()
+								.borrow()
+								.as_ref()
+								.map(|session| session.credentials.clone())
+						};
+						if let Some(credentials) = credentials {
+							persist_profile_with_key(
+								&client,
+								credentials,
+								Some(key),
+								true,
+							)
+							.await;
+						}
+					}
+					None => SigningKeyStorage::delete(),
+				}
+			}
+		});
+		app.state::<AppState>().keep_task(task);
+	}
+}
+
+async fn persist_profile(
+	client: &grindr::GrindrClient,
+	credentials: grindr::Credentials,
+	active: bool,
+) {
+	let key = client.signing_key_receiver().borrow().clone();
+	persist_profile_with_key(client, credentials, key, active).await;
+}
+
+async fn persist_profile_with_key(
+	client: &grindr::GrindrClient,
+	credentials: grindr::Credentials,
+	signing_key: Option<grindr::DeviceSigningKey>,
+	active: bool,
+) {
+	let Some(profile_id) = credentials.profile_id.clone() else {
+		return;
+	};
+	let profile = SavedProfile {
+		profile_id,
+		name: credentials.email.clone(),
+		device: client.current_device().await,
+		credentials,
+		signing_key,
+		geohash: None,
+	};
+	let result = if active {
+		ProfileStorage::save_active_profile(profile)
+	} else {
+		ProfileStorage::save_profile(profile)
+	};
+	if let Err(error) = result {
+		tracing::error!("[profiles] persist failed: {error}");
+	}
+}
 
 const OPEN_GRIND_PLATFORM: &str = if cfg!(target_os = "android") {
 	"android"
@@ -178,12 +321,11 @@ pub fn run() {
         .plugin(api::update::plugin())
         .plugin(app_settings::plugin())
         .plugin(media_picker::plugin())
-        .manage(AppState {
-            client: OnceLock::new(),
-        })
         .manage(upload::UploadLock::default())
         .manage(media::MediaProxy::default())
         .manage(api::session_recovery::SessionRecovery::default())
+        .manage(api::bubble::BubbleState::default())
+        .manage(api::secondary_sessions::SecondarySessions::default())
         .register_asynchronous_uri_scheme_protocol(media::SCHEME, media::handle)
         .invoke_handler(tauri::generate_handler![
             api::auth::sign_in_with_email,
@@ -196,6 +338,23 @@ pub fn run() {
             api::auth::sign_in_with_facebook,
             api::auth::refresh_session,
             api::auth::sign_out,
+            api::auth::profile_list,
+            api::auth::profile_add,
+            api::bubble::bubble_show,
+            api::bubble::bubble_update,
+            api::bubble::bubble_take,
+            api::bubble::bubble_open,
+            api::bubble::bubble_close,
+            api::secondary_sessions::secondary_status,
+            api::auth::profile_switch,
+            api::auth::profile_scan_switch,
+            api::auth::profile_set_location,
+            api::ai_reply::ai_reply_draft,
+            api::ai_reply::apple_intelligence_status,
+            api::ai_reply::ai_reply_profile_is_active,
+            api::ai_reply::openrouter_api_key_status,
+            api::ai_reply::set_openrouter_api_key,
+            api::ai_reply::clear_openrouter_api_key,
             api::auth::account_restriction,
             api::auth::session_feature_flags,
             api::auth::recaptcha_first_party_enabled,
@@ -317,26 +476,89 @@ pub fn run() {
 
             #[cfg(any(
                 target_os = "linux",
-                all(target_os = "macos", not(feature = "keychain"))
+                all(
+                    target_os = "macos",
+                    not(feature = "keychain"),
+                    not(feature = "memory-storage")
+                )
             ))]
             storage::init_file_store(app.path().app_local_data_dir()?);
 
             let backend = storage::init_keyring();
-            #[cfg(all(target_os = "macos", feature = "keychain"))]
+            #[cfg(all(
+                target_os = "macos",
+                feature = "keychain",
+                not(feature = "memory-storage")
+            ))]
             if backend == storage::StorageBackend::Keyring {
                 storage::adopt_legacy_items();
             }
-            app.manage(backend);
-
-            let device = DeviceStorage::load_or_create();
-
-            let credentials = match AuthStorage::get_credentials() {
-                Ok(c) => c,
-                Err(e) => {
-                    tracing::warn!("[setup] could not load credentials: {e}");
+            let openrouter_key_file = app
+                .path()
+                .app_local_data_dir()?
+                .join("secrets")
+                .join("openrouter-api-key");
+            let saved_openrouter_key = match OpenRouterKeyStorage::load() {
+                Ok(key) => key,
+                Err(error) => {
+                    tracing::warn!("[setup] could not load the OpenRouter key: {error}");
                     None
                 }
             };
+            app.manage(AppState::from_environment_file_and_keyring(
+                &openrouter_key_file,
+                saved_openrouter_key,
+            ));
+            app.manage(backend);
+
+            let saved_profiles = match ProfileStorage::load() {
+                Ok(profiles) => profiles,
+                Err(error) => {
+                    tracing::warn!("[setup] could not load profiles: {error}");
+                    Default::default()
+                }
+            };
+            let selected = saved_profiles.active_profile_id.as_deref().and_then(
+                |id| saved_profiles.profiles.iter().find(|p| p.profile_id == id),
+            );
+            let device = selected
+                .map(|profile| profile.device.clone())
+                .unwrap_or_else(DeviceStorage::load_or_create);
+            let credentials = selected.map(|profile| profile.credentials.clone()).or_else(
+                || match AuthStorage::get_credentials() {
+                    Ok(credentials) => credentials,
+                    Err(error) => {
+                        tracing::warn!(
+                            "[setup] could not load credentials: {error}"
+                        );
+                        None
+                    }
+                },
+            );
+            if selected.is_some() {
+                if let Some(credentials) = &credentials {
+                    if let Err(error) = AuthStorage::set_credentials(credentials) {
+                        tracing::warn!(
+                            "[setup] could not restore active credentials: {error}"
+                        );
+                    }
+                }
+                match selected.and_then(|profile| profile.signing_key.as_ref()) {
+                    Some(key) => {
+                        if let Err(error) = SigningKeyStorage::save(key) {
+                            tracing::warn!(
+                                "[setup] could not restore active signing key: {error}"
+                            );
+                        }
+                    }
+                    None => SigningKeyStorage::delete(),
+                }
+                if let Err(error) = DeviceStorage::save(&device) {
+                    tracing::warn!(
+                        "[setup] could not restore active device: {error}"
+                    );
+                }
+            }
 
             let resumed = credentials.clone().map(|credentials| grindr::Session {
                 credentials,
@@ -346,81 +568,19 @@ pub fn run() {
                 grindr::GrindrClient::new(device, resumed)
                     .expect("failed to build GrindrClient")
             });
-
-            {
-                let mut session_rx = client.session_receiver();
-                let mut stored = credentials;
-                let mut restriction = None;
-                let handle = app.handle().clone();
-                tauri::async_runtime::spawn(async move {
-                    while session_rx.changed().await.is_ok() {
-                        let (next, next_restriction) = {
-                            let session = session_rx.borrow();
-                            (
-                                session
-                                    .as_ref()
-                                    .map(|session| session.credentials.clone()),
-                                session.as_ref().and_then(|session| {
-                                    session.token.as_ref()?.restriction.clone()
-                                }),
-                            )
-                        };
-
-                        if next_restriction != restriction {
-                            if let Some(r) = &next_restriction {
-                                use tauri::Emitter;
-                                handle
-                                    .emit(
-                                        "auth:restriction",
-                                        api::auth::Restriction::from(r.clone()),
-                                    )
-                                    .ok();
-                            }
-                            restriction = next_restriction;
-                        }
-
-                        if next == stored {
-                            continue;
-                        }
-                        match &next {
-                            Some(c) => {
-                                if let Err(e) = AuthStorage::set_credentials(c) {
-                                    tracing::error!("[session] persist failed: {e}");
-                                }
-                            }
-                            None => AuthStorage::delete_credentials(),
-                        }
-                        stored = next;
-                    }
-                });
-            }
-
-            {
-                let client = client.clone();
-                let mut key_rx = client.signing_key_receiver();
-                tauri::async_runtime::spawn(async move {
-                    SigningKeyStorage::restore(&client).await;
-                    while key_rx.changed().await.is_ok() {
-                        let key = key_rx.borrow().clone();
-                        match key {
-                            Some(k) => {
-                                if let Err(e) = SigningKeyStorage::save(&k) {
-                                    tracing::error!("[signing] persist failed: {e}");
-                                }
-                            }
-                            None => SigningKeyStorage::delete(),
-                        }
-                    }
-                });
-            }
-
-            app.state::<AppState>()
-                .client
-                .set(client)
-                .ok()
-                .expect("client already set");
+            app.state::<AppState>().set_client(client.clone());
+            watch_client(app.handle().clone(), client);
 
             api::ws::spawn_ws_task(app.handle().clone());
+
+            // Bring every other saved profile online in the background.
+            // Fire-and-forget: the main session must never wait for it.
+            {
+                let app = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    api::secondary_sessions::resync_all(&app).await;
+                });
+            }
 
             Ok(())
         })

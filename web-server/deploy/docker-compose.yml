@@ -1,0 +1,25 @@
+services:
+  app:
+    image: open-grind-web:deploy
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    restart: always
+    environment:
+      OG_ORIGIN: https://meuprofile.com
+      OG_ADMIN_USER: ${OG_ADMIN_USER:-italosantos}
+      OG_PASSWORD: ${OG_PASSWORD:-}
+      OG_ACCESS_EMAIL: ${OG_ACCESS_EMAIL:-}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+    volumes:
+      - og-data:/data
+  tunnel:
+    image: cloudflare/cloudflared:2026.10.0
+    restart: always
+    command: tunnel --config /etc/cloudflared/config.yml run 171b0f11-a74a-479a-b270-27d70fe0759a
+    volumes:
+      - ./cloudflared-config.yml:/etc/cloudflared/config.yml:ro
+      - ${OG_TUNNEL_CREDENTIALS_FILE:?OG_TUNNEL_CREDENTIALS_FILE must point to the local tunnel credentials file}:/etc/cloudflared/credentials.json:ro
+    depends_on: [app]
+volumes:
+  og-data:

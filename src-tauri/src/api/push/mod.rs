@@ -1,9 +1,11 @@
 #[cfg(target_os = "android")]
 mod android;
 mod announcement;
-#[cfg(not(target_os = "android"))]
+#[cfg(desktop)]
 mod desktop;
 mod error;
+#[cfg(target_os = "ios")]
+mod ios;
 #[cfg(test)]
 mod pins;
 
@@ -11,9 +13,11 @@ mod pins;
 use android as backend;
 pub use announcement::{Announcement, Category};
 pub use backend::plugin;
-#[cfg(not(target_os = "android"))]
+#[cfg(desktop)]
 use desktop as backend;
 pub use error::PushError;
+#[cfg(target_os = "ios")]
+use ios as backend;
 
 use std::time::Duration;
 

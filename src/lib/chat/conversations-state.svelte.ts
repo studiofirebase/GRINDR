@@ -1,7 +1,12 @@
-/* eslint max-lines: ["error", { "max": 630, "skipBlankLines": true, "skipComments": true }] -- Keep lifecycle guards with the state they protect. */
+/* eslint max-lines: ["error", { "max": 680, "skipBlankLines": true, "skipComments": true }] -- Keep lifecycle guards with the state they protect. */
 
 import { page } from "$app/state";
 
+import {
+	awaitBackgroundSwapEnd,
+	backgroundSessionSwapInFlight,
+	swapSettleWaitMs,
+} from "$lib/api/background-session-swap";
 import { showErrorToast } from "$lib/api/error-toast";
 import {
 	deleteConversationForMe,
@@ -10,6 +15,7 @@ import {
 	setConversationPinned,
 } from "$lib/api/messaging/conversations";
 import { onProfileEdit } from "$lib/api/users/profiles";
+import { scanUnreadAutomaticRepliesForProfile } from "$lib/chat/automatic-replies";
 import { RememberedConversationFlags } from "$lib/chat/conversation-flags";
 import { sortConversations } from "$lib/chat/conversation-order";
 import { ConversationReadRequests } from "$lib/chat/conversation-read-requests";
@@ -61,7 +67,9 @@ export type IncomingMessageHandler = (incoming: {
 	conversation: Conversation;
 	inView: boolean;
 }) => void;
-
+export type AutomaticReplyMessageHandler = (
+	message: ApiResponseMessage,
+) => void;
 class ConversationsState {
 	entries = $state<Conversation[]>([]);
 	nextPage = $state<number | null>(null);
@@ -78,6 +86,7 @@ class ConversationsState {
 	readonly inboxViewed: InboxViewedMarker;
 	readonly paging: SentinelPaging;
 	#onIncomingMessage: IncomingMessageHandler;
+	#onAutomaticReply: AutomaticReplyMessageHandler;
 	#onConversationRead: ConversationReadHandler;
 	#reads: ConversationReads;
 	#readRequests = new ConversationReadRequests();
@@ -108,16 +117,19 @@ class ConversationsState {
 	constructor({
 		ourProfileId,
 		onIncomingMessage,
+		onAutomaticReply = () => {},
 		onConversationRead = () => {},
 		onFetchedReads = () => {},
 	}: {
 		ourProfileId: number;
 		onIncomingMessage: IncomingMessageHandler;
+		onAutomaticReply?: AutomaticReplyMessageHandler;
 		onConversationRead?: ConversationReadHandler;
 		onFetchedReads?: FetchedReadsHandler;
 	}) {
 		this.ourProfileId = ourProfileId;
 		this.#onIncomingMessage = onIncomingMessage;
+		this.#onAutomaticReply = onAutomaticReply;
 		this.#onConversationRead = onConversationRead;
 		this.#reads = new ConversationReads({
 			ourProfileId,
@@ -136,9 +148,16 @@ class ConversationsState {
 		});
 		void this.#hardLoad();
 
-		this.#unsubscribeReconcile = reconciler.subscribe(() =>
-			this.#fetches.track(this.#reconcile()),
-		);
+		this.#unsubscribeReconcile = reconciler.subscribe((cause) => {
+			const reconciled = this.#fetches.track(this.#reconcile());
+			if (
+				cause === "reconnect" ||
+				cause === "resync" ||
+				cause === "resume"
+			)
+				void scanUnreadAutomaticRepliesForProfile(this.ourProfileId);
+			return reconciled;
+		});
 
 		this.#wsPromises.push(
 			ws.on(
@@ -146,7 +165,9 @@ class ConversationsState {
 				chatV1MessageSentEventSchema,
 				(event) => {
 					if (this.#destroyed) return;
-					void this.#handleMessageSent(event.payload);
+					this.#whenSettled(() =>
+						this.#handleMessageSent(event.payload),
+					);
 				},
 			),
 			ws.on(
@@ -154,13 +175,30 @@ class ConversationsState {
 				chatV1ConversationDeleteEventSchema,
 				(event) => {
 					if (this.#destroyed) return;
-					for (const id of event.payload.conversationIds) {
-						this.remove(id);
-						this.#markServerDeleted(id);
-					}
+					this.#whenSettled(() => {
+						for (const id of event.payload.conversationIds) {
+							this.remove(id);
+							this.#markServerDeleted(id);
+						}
+					});
 				},
 			),
 		);
+	}
+
+	// Mid-swap the socket may belong to another profile: hold the payload
+	// until the visible session is back instead of dropping the balloon
+	// (and the unread) on the floor.
+	#whenSettled(run: () => void | Promise<void>): void {
+		if (!backgroundSessionSwapInFlight()) {
+			void run();
+			return;
+		}
+		void (async () => {
+			if (!(await awaitBackgroundSwapEnd(swapSettleWaitMs))) return;
+			if (this.#destroyed) return;
+			await run();
+		})();
 	}
 
 	async destroy(): Promise<void> {
@@ -193,6 +231,7 @@ class ConversationsState {
 			return;
 		}
 		this.#seenMessages.mark(message.messageId);
+		if (isIncoming && !message.unsent) this.#onAutomaticReply(message);
 
 		if (entry) {
 			if (counts) entry.data.unreadCount += 1;
@@ -225,8 +264,14 @@ class ConversationsState {
 			void this.markRead(conversationId);
 		if (!isIncoming || message.unsent || !entry || entry.data.muted) return;
 		const isInboxPageRoot = page.route.id === "/(protected)/chat";
+		const isConversationRoute =
+			page.route.id === "/(protected)/chat/[conversationId]";
 		const twoColLayout = !singleColumnLayout.current;
-		const isConversationsListVisible = isInboxPageRoot || twoColLayout;
+		// Wide layout alone does not show the list: only the inbox root
+		// and (side by side) the open conversation do. Anywhere else the
+		// balloon must fire, otherwise desktop never shows one.
+		const isConversationsListVisible =
+			isInboxPageRoot || (twoColLayout && isConversationRoute);
 		this.#onIncomingMessage({
 			message,
 			conversation: entry,
@@ -237,6 +282,12 @@ class ConversationsState {
 
 	async #reconcile(): Promise<void> {
 		if (this.#destroyed) return;
+		// The backend answers as another profile mid-swap: wait it out so
+		// this session never merges the wrong inbox.
+		if (backgroundSessionSwapInFlight()) {
+			if (!(await awaitBackgroundSwapEnd(swapSettleWaitMs))) return;
+			if (this.#destroyed) return;
+		}
 		if (this.refreshing) {
 			this.#refreshRequestedSinceFetchStart = true;
 			return;
@@ -357,6 +408,10 @@ class ConversationsState {
 		errorLabel?: string;
 	}): Promise<boolean> {
 		if (this.#destroyed) return false;
+		if (backgroundSessionSwapInFlight()) {
+			if (!(await awaitBackgroundSwapEnd(swapSettleWaitMs))) return false;
+			if (this.#destroyed) return false;
+		}
 		// Claiming would make an in-flight #load drop the nextPage it fetched.
 		const fetchEpoch = this.#fetches.current;
 		const lastActivitiesAtFetchStart = this.#reads.lastActivities(
@@ -400,6 +455,13 @@ class ConversationsState {
 	}
 
 	async #load(page: number): Promise<void> {
+		// Synchronous fast path: #hardLoad reads the fetch epoch right
+		// after invoking #load, so nothing may suspend before next().
+		if (backgroundSessionSwapInFlight()) {
+			if (!(await awaitBackgroundSwapEnd(swapSettleWaitMs))) return;
+			if (this.#destroyed) return;
+		}
+		if (this.#destroyed) return;
 		const fetchEpoch = this.#fetches.next();
 		const result = await getConversations({
 			page,
@@ -513,6 +575,12 @@ class ConversationsState {
 	}
 
 	async markRead(conversationId: string): Promise<void> {
+		// Read receipts address a conversation on the active session: wait
+		// out a swap so they never land on another profile.
+		if (backgroundSessionSwapInFlight()) {
+			if (!(await awaitBackgroundSwapEnd(swapSettleWaitMs))) return;
+			if (this.#destroyed) return;
+		}
 		const entry = this.#find(conversationId);
 		if (entry) await this.#readRequests.read(entry);
 		else if (this.#isActive(conversationId))

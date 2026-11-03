@@ -95,7 +95,7 @@ export const methods = {
 	},
 	storage_backend: {
 		request: z.undefined(),
-		response: z.enum(["keyring", "file", "unavailable"]),
+		response: z.enum(["keyring", "file", "memory", "unavailable"]),
 	},
 	refresh_session: {
 		request: z.object({ geohash: geohashSchema.optional() }).optional(),
@@ -109,6 +109,98 @@ export const methods = {
 		}),
 	},
 	sign_out: { request: z.undefined(), response: z.null() },
+	profile_list: {
+		request: z.undefined(),
+		response: z.array(
+			z.object({
+				profileId: z.string(),
+				name: z.string(),
+				active: z.boolean(),
+			}),
+		),
+	},
+	profile_add: { request: z.undefined(), response: z.null() },
+	profile_switch: {
+		request: z.object({ profileId: z.string().min(1) }),
+		response: geohashSchema.nullable(),
+	},
+	profile_scan_switch: {
+		request: z.object({ profileId: z.string().min(1) }),
+		response: geohashSchema.nullable(),
+	},
+	profile_set_location: {
+		request: z.object({ geohash: geohashSchema.nullable() }),
+		response: z.null(),
+	},
+	secondary_status: {
+		request: z.undefined(),
+		response: z.array(
+			z.object({ profileId: z.string(), wsOnline: z.boolean() }),
+		),
+	},
+	bubble_show: {
+		request: z.object({
+			profileId: z.string().min(1),
+			profileName: z.string(),
+			conversationId: z.string().nullable(),
+			peerName: z.string(),
+			peerAvatarMediaHash: z.string().nullable(),
+			snippet: z.string(),
+			unread: z.int().nonnegative(),
+		}),
+		response: z.null(),
+	},
+	bubble_update: {
+		request: z.object({
+			profileId: z.string().min(1),
+			profileName: z.string(),
+			conversationId: z.string().nullable(),
+			peerName: z.string(),
+			peerAvatarMediaHash: z.string().nullable(),
+			snippet: z.string(),
+			unread: z.int().nonnegative(),
+		}),
+		response: z.boolean(),
+	},
+	bubble_take: {
+		request: z.undefined(),
+		response: z
+			.object({
+				profileId: z.string(),
+				profileName: z.string(),
+				conversationId: z.string().nullable(),
+				peerName: z.string(),
+				peerAvatarMediaHash: z.string().nullable(),
+				snippet: z.string(),
+				unread: z.int().nonnegative(),
+			})
+			.nullable(),
+	},
+	bubble_open: {
+		request: z.object({
+			profileId: z.string().min(1),
+			profileName: z.string(),
+		}),
+		response: z.null(),
+	},
+	bubble_close: { request: z.undefined(), response: z.null() },
+	ai_reply_profile_is_active: {
+		request: z.object({ profileId: z.string().min(1) }),
+		response: z.boolean(),
+	},
+	apple_intelligence_status: {
+		request: z.undefined(),
+		response: z.object({ available: z.boolean(), message: z.string() }),
+	},
+	openrouter_api_key_status: {
+		request: z.undefined(),
+		response: z.boolean(),
+	},
+	set_openrouter_api_key: {
+		request: z.object({ apiKey: z.string().min(1).max(512) }),
+		response: z.null(),
+	},
+	clear_openrouter_api_key: { request: z.undefined(), response: z.null() },
 	recaptcha_first_party_enabled: {
 		request: z.undefined(),
 		response: z.boolean(),

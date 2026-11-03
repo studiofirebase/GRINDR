@@ -4,9 +4,14 @@ use serde::{Deserialize, Serialize};
 use crate::error::AppError;
 use crate::media::MediaProxy;
 use crate::state::AppState;
-use crate::storage::{AuthStorage, DeviceStorage, SigningKeyStorage};
+use crate::storage::{
+	AuthStorage, DeviceStorage, ProfileStorage, SavedProfile,
+	SigningKeyStorage, MAX_PROFILES,
+};
 
 static SIGN_OUT: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+static PROFILE_SWITCH: tokio::sync::Mutex<()> =
+	tokio::sync::Mutex::const_new(());
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -176,7 +181,7 @@ pub async fn refresh_session(
 	let result = client
 		.refresh_session_at_geohash(geohash.as_deref())
 		.await
-		.map_err(|e| AppError::from_client_error(e, client))?;
+		.map_err(|e| AppError::from_client_error(e, &client))?;
 	Ok(SignInResult::from(result))
 }
 
@@ -186,7 +191,271 @@ pub async fn sign_out(
 	state: tauri::State<'_, AppState>,
 	media: tauri::State<'_, MediaProxy>,
 ) -> Result<(), AppError> {
+	let _one_at_a_time = PROFILE_SWITCH.lock().await;
+	let client = state.client()?;
+	if let Some(profile_id) = client
+		.session_receiver()
+		.borrow()
+		.as_ref()
+		.and_then(|session| session.credentials.profile_id.clone())
+	{
+		ProfileStorage::remove(&profile_id)?;
+	}
+	ProfileStorage::set_active(None)?;
 	end_session(&app, &state, &media).await
+}
+
+/// How much of the visible-session bookkeeping a session switch performs.
+/// Background scans borrow the backend session for a few seconds: they must
+/// not flap the stored active profile, cycle the websocket, churn media
+/// caches, or disturb the secondary clients. Only the persisted identity
+/// (credentials/device/signing key) swaps, which the restore step rewrites.
+#[derive(Debug, Clone, Copy)]
+struct SwitchMode {
+	persist_active: bool,
+	connect_ws: bool,
+	reset_media: bool,
+}
+
+const USER_SWITCH: SwitchMode = SwitchMode {
+	persist_active: true,
+	connect_ws: true,
+	reset_media: true,
+};
+
+const SCAN_SWITCH: SwitchMode = SwitchMode {
+	persist_active: false,
+	connect_ws: false,
+	reset_media: false,
+};
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProfileSummary {
+	pub profile_id: String,
+	pub name: String,
+	pub active: bool,
+}
+
+#[tauri::command]
+pub fn profile_list(
+	state: tauri::State<'_, AppState>,
+) -> Result<Vec<ProfileSummary>, AppError> {
+	let saved = ProfileStorage::load()?;
+	let active_id = state.client().ok().and_then(|client| {
+		client
+			.session_receiver()
+			.borrow()
+			.as_ref()
+			.and_then(|session| session.credentials.profile_id.clone())
+	});
+	Ok(saved
+		.profiles
+		.into_iter()
+		.map(|profile| ProfileSummary {
+			active: active_id.as_deref() == Some(&profile.profile_id),
+			profile_id: profile.profile_id,
+			name: profile.name,
+		})
+		.collect())
+}
+
+#[tauri::command]
+pub async fn profile_add(
+	app: tauri::AppHandle,
+	state: tauri::State<'_, AppState>,
+	media: tauri::State<'_, MediaProxy>,
+) -> Result<(), AppError> {
+	let _one_at_a_time = PROFILE_SWITCH.lock().await;
+	let mut saved = ProfileStorage::load()?;
+	if saved.profiles.len() >= MAX_PROFILES {
+		return Err(AppError::Auth(format!(
+			"at most {MAX_PROFILES} profiles can be saved"
+		)));
+	}
+	let client = state.client()?;
+	let current_session = { client.session_receiver().borrow().clone() };
+	if let Some(session) = current_session {
+		let Some(profile_id) = session.credentials.profile_id.clone() else {
+			return Err(AppError::NotSignedIn);
+		};
+		let profile = SavedProfile {
+			profile_id,
+			name: session.credentials.email.clone(),
+			device: client.current_device().await,
+			credentials: session.credentials,
+			signing_key: client.signing_key_receiver().borrow().clone(),
+			geohash: None,
+		};
+		ProfileStorage::save_active_profile(profile)?;
+		saved = ProfileStorage::load()?;
+	}
+	if saved.profiles.len() >= MAX_PROFILES {
+		return Err(AppError::Auth(format!(
+			"at most {MAX_PROFILES} profiles can be saved"
+		)));
+	}
+	ProfileStorage::set_active(None)?;
+	end_session(&app, &state, &media).await
+}
+
+#[tauri::command]
+pub async fn profile_switch(
+	app: tauri::AppHandle,
+	state: tauri::State<'_, AppState>,
+	media: tauri::State<'_, MediaProxy>,
+	recovery: tauri::State<'_, super::session_recovery::SessionRecovery>,
+	profile_id: String,
+) -> Result<Option<String>, AppError> {
+	switch_session(app, state, media, recovery, profile_id, USER_SWITCH).await
+}
+
+/// Background variant of [`profile_switch`]: borrows the backend session so
+/// a scan can read (and let the AI answer) another profile without
+/// disturbing the visible one. Skips every visible-session side effect; the
+/// caller must switch back afterwards.
+#[tauri::command]
+pub async fn profile_scan_switch(
+	app: tauri::AppHandle,
+	state: tauri::State<'_, AppState>,
+	media: tauri::State<'_, MediaProxy>,
+	recovery: tauri::State<'_, super::session_recovery::SessionRecovery>,
+	profile_id: String,
+) -> Result<Option<String>, AppError> {
+	switch_session(app, state, media, recovery, profile_id, SCAN_SWITCH).await
+}
+
+async fn switch_session(
+	app: tauri::AppHandle,
+	state: tauri::State<'_, AppState>,
+	media: tauri::State<'_, MediaProxy>,
+	recovery: tauri::State<'_, super::session_recovery::SessionRecovery>,
+	profile_id: String,
+	mode: SwitchMode,
+) -> Result<Option<String>, AppError> {
+	let _one_at_a_time = PROFILE_SWITCH.lock().await;
+	let saved = ProfileStorage::load()?;
+	let target = saved
+		.profiles
+		.iter()
+		.find(|profile| profile.profile_id == profile_id)
+		.cloned()
+		.ok_or_else(|| AppError::Auth("profile is not saved".to_owned()))?;
+	let current = state.client()?;
+	if current
+		.session_receiver()
+		.borrow()
+		.as_ref()
+		.and_then(|session| session.credentials.profile_id.as_deref())
+		== Some(profile_id.as_str())
+	{
+		return Ok(target.geohash);
+	}
+	let current_session = { current.session_receiver().borrow().clone() };
+	if let Some(session) = current_session {
+		if let Some(current_id) = session.credentials.profile_id.clone() {
+			ProfileStorage::save_profile(SavedProfile {
+				profile_id: current_id,
+				name: session.credentials.email.clone(),
+				device: current.current_device().await,
+				credentials: session.credentials,
+				signing_key: current.signing_key_receiver().borrow().clone(),
+				geohash: None,
+			})?;
+		}
+	}
+
+	let next = grindr::GrindrClient::new(
+		target.device.clone(),
+		Some(grindr::Session {
+			credentials: target.credentials.clone(),
+			token: None,
+		}),
+	)
+	.map_err(|error| AppError::Auth(error.to_string()))?;
+	let restored_key = match target.signing_key.clone() {
+		Some(key) if next.restore_signing_key(key.clone()).await => Some(key),
+		Some(_) => {
+			tracing::warn!(
+				"[profiles] saved device signing key was refused for profile {}",
+				target.profile_id
+			);
+			None
+		}
+		None => None,
+	};
+	current.set_active(false);
+	current.sign_out().await;
+	if mode.reset_media {
+		media.forget_everything().await;
+	}
+	state.set_client(next.clone());
+	if mode.persist_active {
+		ProfileStorage::set_active(Some(profile_id))?;
+	}
+	AuthStorage::set_credentials(&target.credentials)?;
+	DeviceStorage::save(&target.device)?;
+	SigningKeyStorage::delete();
+	if let Some(key) = restored_key.as_ref() {
+		if let Err(error) = SigningKeyStorage::save(key) {
+			tracing::error!("[profiles] could not restore device key: {error}");
+		}
+	}
+	if mode.connect_ws {
+		next.set_active(
+			recovery
+				.foreground
+				.load(std::sync::atomic::Ordering::SeqCst),
+		);
+		crate::watch_client(app.clone(), next.clone());
+		super::ws::spawn_ws_task(app.clone());
+		next.connect().await;
+		// The profile we just switched to must never keep a background twin,
+		// and the one we left behind should come online in the background.
+		super::secondary_sessions::drop_secondary(&app, &target.profile_id)
+			.await;
+		let resync_app = app.clone();
+		tauri::async_runtime::spawn(async move {
+			super::secondary_sessions::resync_all(&resync_app).await;
+		});
+	}
+	Ok(target.geohash)
+}
+
+#[tauri::command]
+pub async fn profile_set_location(
+	state: tauri::State<'_, AppState>,
+	geohash: Option<String>,
+) -> Result<(), AppError> {
+	let _one_at_a_time = PROFILE_SWITCH.lock().await;
+	if let Some(hash) = &geohash {
+		if hash.len() != 12
+			|| !hash.bytes().all(|byte| {
+				matches!(
+					byte,
+					b'0'..=b'9' | b'b'..=b'h' | b'j'..=b'n' | b'p'..=b'z'
+				)
+			}) {
+			return Err(AppError::Auth("invalid geohash".to_owned()));
+		}
+	}
+
+	let client = state.client()?;
+	let Some(session) = client.session_receiver().borrow().clone() else {
+		return Ok(());
+	};
+	let Some(profile_id) = session.credentials.profile_id.clone() else {
+		return Ok(());
+	};
+	let profile = SavedProfile {
+		profile_id,
+		name: session.credentials.email.clone(),
+		device: client.current_device().await,
+		credentials: session.credentials,
+		signing_key: client.signing_key_receiver().borrow().clone(),
+		geohash: None,
+	};
+	ProfileStorage::save_active_profile_with_location(profile, geohash)
 }
 
 pub(crate) async fn end_session(
@@ -195,7 +464,11 @@ pub(crate) async fn end_session(
 	media: &MediaProxy,
 ) -> Result<(), AppError> {
 	let _one_at_a_time = SIGN_OUT.lock().await;
-	forget_account(state.client()?, media).await?;
+	// Nobody stays online once the user signs out (or starts over to add
+	// another profile).
+	super::secondary_sessions::stop_all_sessions(app).await;
+	let client = state.client()?;
+	forget_account(&client, media).await?;
 	super::facebook_oauth::forget_sign_in_profile(app).await;
 	crate::upload::staged::discard_all(app);
 	Ok(())
@@ -300,7 +573,11 @@ mod tests {
 
 	#[cfg(any(
 		target_os = "linux",
-		all(target_os = "macos", not(feature = "keychain"))
+		all(
+			target_os = "macos",
+			not(feature = "keychain"),
+			not(feature = "memory-storage")
+		)
 	))]
 	#[test]
 	fn ending_a_session_forgets_the_account_and_moves_to_a_new_device() {

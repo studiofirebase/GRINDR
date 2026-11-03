@@ -24,5 +24,8 @@ export function showIncomingMessageToast({
 		position: "top-center",
 		class: "incoming-message-toast rounded-2xl",
 		id: conversationId,
+		// The balloon is the alert: it stays until tapped or dismissed,
+		// even when an automatic reply lands right after the message.
+		duration: Number.POSITIVE_INFINITY,
 	});
 }

@@ -2,6 +2,11 @@ import { untrack } from "svelte";
 import type z from "zod";
 
 import { registerAccountCache } from "$lib/api/account-caches";
+import {
+	awaitBackgroundSwapEnd,
+	backgroundSessionSwapInFlight,
+	swapSettleWaitMs,
+} from "$lib/api/background-session-swap";
 import { showErrorToast } from "$lib/api/error-toast";
 import {
 	genderFilterFlag,
@@ -296,6 +301,13 @@ class GridState {
 			keepLoadedPages?: boolean;
 		},
 	): Promise<void> {
+		// The cascade belongs to whoever the backend currently is: wait out
+		// a background scan so one profile's grid never lands in another's.
+		if (
+			backgroundSessionSwapInFlight() &&
+			!(await awaitBackgroundSwapEnd(swapSettleWaitMs))
+		)
+			return;
 		const generation = this.#generation.next();
 		this.#retargeted = null;
 		this.#stale = false;

@@ -8,19 +8,31 @@
 
 <Alert.Root class="m-auto w-full max-w-sm">
 	<SmileySadIcon size="2em" color="#ffba20" weight="fill" />
-	<Alert.Title>Unimplemented</Alert.Title>
+	<Alert.Title>Create your account on Grindr</Alert.Title>
 	<Alert.Description>
-		Registration is not implemented yet, track <Link
-			href="https://git.opengrind.org/open-grind/open-grind/issues/21"
+		<p>
+			Grindr requires captcha, email and age verification, so accounts are
+			created in the official Grindr app (name, phone, email, password and
+			SMS code) (tracked in <Link
+				href="https://git.opengrind.org/open-grind/open-grind/issues/21"
+			>
+				#21
+			</Link>). After registering, sign in here with your email or Google.
+		</p>
+		<Button
+			href="https://www.grindr.com/download"
+			target="_blank"
+			rel="noopener noreferrer"
+			class="mbs-2 block w-full"
 		>
-			#21
-		</Link>.
+			Get the official Grindr app
+		</Button>
 		<Button
 			variant="link"
 			href="/auth/sign-in"
 			class="mbs-1 block size-fit px-0"
 		>
-			Sign In
+			I already registered — Sign In
 		</Button>
 	</Alert.Description>
 </Alert.Root>

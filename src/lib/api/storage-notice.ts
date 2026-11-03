@@ -10,6 +10,11 @@ export async function noticeStorageBackend(): Promise<void> {
 			"This device can't keep you signed in. You'll be signed out when the app closes.",
 			{ id: "storage-backend", duration: Number.POSITIVE_INFINITY },
 		);
+	} else if (backend === "memory") {
+		toast.warning(
+			"Your session is kept only in memory. You'll need to sign in again after closing the app. Existing Keychain items are untouched.",
+			{ id: "storage-backend", duration: Number.POSITIVE_INFINITY },
+		);
 	} else if (backend === "file" && platform() === "linux") {
 		toast.warning(
 			"No secret service found. Your sign-in is kept in a plain file only your user can read.",

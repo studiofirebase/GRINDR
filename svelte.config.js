@@ -51,6 +51,10 @@ const config = {
 	compilerOptions: { experimental: { async: true } },
 	kit: {
 		adapter: adapter({ fallback: "index.html" }),
+		prerender: {
+			// The native floating notification opens this route directly.
+			entries: ["*", "/bubble"],
+		},
 		alias: { $layout: "src/layout.css" },
 		version: {
 			name: `OpenGrind/${projectVersion}\ngrindr3/${grindrApiVersion};${grindrApiBuildNumber}`,

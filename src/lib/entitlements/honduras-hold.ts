@@ -1,4 +1,9 @@
 import { accountEpoch, isAccountEpochCurrent } from "$lib/api/account-caches";
+import {
+	awaitBackgroundSwapEnd,
+	backgroundSessionSwapInFlight,
+	swapSettleWaitMs,
+} from "$lib/api/background-session-swap";
 import { updateLocation } from "$lib/api/browse/location";
 import { callMethod } from "$lib/api/methods";
 import { onSignOut } from "$lib/api/sign-out";
@@ -136,6 +141,17 @@ class Hold {
 			await updateLocation({ geohash });
 		});
 		this.#throwIfOver();
+		// refresh_session tags the current backend session: wait out a
+		// background scan so the spoofed location never lands on a profile
+		// being scanned.
+		if (
+			backgroundSessionSwapInFlight() &&
+			!(await awaitBackgroundSwapEnd(swapSettleWaitMs))
+		) {
+			throw new Error(
+				"The app is finishing a background sync; try again.",
+			);
+		}
 		await callMethod("refresh_session", { geohash });
 	}
 

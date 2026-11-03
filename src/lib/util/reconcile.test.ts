@@ -353,6 +353,39 @@ describe("Reconciler causes", () => {
 	});
 });
 
+describe("Reconciler during background session swaps", () => {
+	beforeEach(() => {
+		vi.useFakeTimers();
+	});
+
+	afterEach(() => {
+		vi.useRealTimers();
+	});
+
+	it("holds subscriber runs until the swap settles", async () => {
+		const reconciler = await freshReconciler();
+		// Same module registry as the fresh reconciler (reset above).
+		const { beginBackgroundSessionSwap } =
+			await import("$lib/api/background-session-swap");
+		const handler = vi.fn();
+		reconciler.subscribe(handler);
+
+		const endSwap = beginBackgroundSessionSwap();
+		try {
+			dropEvents(3);
+			await flushMockSubscriptions();
+			expect(handler).not.toHaveBeenCalled();
+
+			endSwap();
+			await vi.advanceTimersByTimeAsync(100);
+			await flushMockSubscriptions();
+			expect(handler).toHaveBeenCalledTimes(1);
+		} finally {
+			endSwap();
+		}
+	});
+});
+
 describe("Reconciler while the profile is away from home", () => {
 	beforeEach(() => {
 		vi.useFakeTimers();

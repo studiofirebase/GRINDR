@@ -1,3 +1,8 @@
 {
-	"identifier": "org.opengrind.app"
+	"identifier": "org.opengrind.app",
+	"bundle": {
+		"resources": {
+			"target/apple-intelligence": "apple-intelligence"
+		}
+	}
 }

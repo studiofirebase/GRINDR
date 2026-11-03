@@ -21,7 +21,12 @@ export function isDesktopPlatform(): boolean {
 }
 
 export function isAndroidPlatform(): boolean {
-	return isTauri() && platform() === "android";
+	if (!isTauri()) return false;
+	try {
+		return platform() === "android";
+	} catch {
+		return false;
+	}
 }
 
 export function isLinuxPlatform(): boolean {

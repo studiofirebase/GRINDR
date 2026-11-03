@@ -19,6 +19,7 @@
     !insertmacro DeleteKeyringEntry "session.open-grind"
     !insertmacro DeleteKeyringEntry "device-info.open-grind"
     !insertmacro DeleteKeyringEntry "device-signing-key.open-grind"
+    !insertmacro DeleteKeyringEntry "profiles.open-grind"
     !insertmacro DeleteKeyringEntry "startup-probe.open-grind"
   ${EndIf}
 !macroend

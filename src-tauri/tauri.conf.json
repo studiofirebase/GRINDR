@@ -1,6 +1,6 @@
 {
 	"$schema": "https://schema.tauri.app/config/2",
-	"productName": "Open Grind",
+	"productName": "Grindr Modificado V1",
 	"version": "0.1.0-rc.1-dev",
 	"identifier": "org.opengrind",
 	"build": {
@@ -14,7 +14,7 @@
 		"windows": [
 			{
 				"label": "main",
-				"title": "Open Grind",
+				"title": "Grindr Modificado V1",
 				"width": 1056,
 				"height": 800,
 				"minWidth": 320,

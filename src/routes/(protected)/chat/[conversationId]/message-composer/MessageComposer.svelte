@@ -1,11 +1,15 @@
 <script lang="ts">
 	import { onNavigate } from "$app/navigation";
+	import CircleNotchIcon from "phosphor-svelte/lib/CircleNotchIcon";
+	import SparkleIcon from "phosphor-svelte/lib/SparkleIcon";
 	import { onDestroy, tick, untrack } from "svelte";
 
 	import { showErrorToast } from "$lib/api/error-toast";
 	import { getConversations } from "$lib/chat/conversations-context.svelte";
+	import { Button } from "$lib/components/ui/button";
 	import { draftFromMessage } from "$lib/model/messaging/messages";
 	import { dismissOnBackGesture } from "$lib/platform/back-gesture-event.svelte";
+	import { isDesktopPlatform } from "$lib/platform/os";
 	import { below } from "$lib/util/breakpoints.svelte";
 	import { bottomChrome } from "$lib/util/screen-chrome.svelte";
 	import type {
@@ -28,6 +32,9 @@
 
 	let {
 		conversationId,
+		ourProfileId,
+		onSuggestReply,
+		canSuggestReply = true,
 		onSend,
 		disabled,
 		replyTo,
@@ -35,6 +42,9 @@
 		height = $bindable(0),
 	}: {
 		conversationId: string;
+		ourProfileId: number;
+		onSuggestReply: () => Promise<string>;
+		canSuggestReply?: boolean;
 		onSend: (drafts: MessageDraft[]) => void | Promise<void>;
 		disabled: boolean;
 		replyTo?: ApiResponseMessage | null;
@@ -45,8 +55,13 @@
 	const { drafts } = getConversations();
 	const sheets = getComposerSheets();
 	const mobile = below("split");
+	const desktop = isDesktopPlatform();
 
 	let textContent = $state(untrack(() => drafts.get(conversationId)));
+	let suggestingReply = $state(false);
+	let suggestionRequestId = 0;
+	let suggestionConversationId: string | null = null;
+	let suggestionProfileId: number | null = null;
 	let form: HTMLFormElement | null = $state(null);
 	let textInput: HTMLTextAreaElement | null = $state(null);
 	let stickersTrigger: HTMLElement | null = $state(null);
@@ -64,6 +79,54 @@
 			showErrorToast({ label: "Failed to send message", error });
 		}
 	}
+
+	async function suggestReply() {
+		if (suggestingReply || textContent.trim() !== "") return;
+		const requestId = ++suggestionRequestId;
+		const requestedConversationId = conversationId;
+		const requestedProfileId = ourProfileId;
+		suggestingReply = true;
+		try {
+			const suggestion = await onSuggestReply();
+			if (
+				requestId !== suggestionRequestId ||
+				conversationId !== requestedConversationId ||
+				ourProfileId !== requestedProfileId ||
+				textContent.trim() !== "" ||
+				suggestion.trim() === ""
+			)
+				return;
+			await onSend([
+				draftFromMessage({
+					type: "Text",
+					body: { text: suggestion.trim() },
+				}),
+			]);
+			drafts.discard(requestedConversationId);
+		} catch (error) {
+			console.error(error);
+			showErrorToast({ label: "Could not send an AI reply", error });
+		} finally {
+			if (requestId === suggestionRequestId) suggestingReply = false;
+		}
+	}
+
+	$effect(() => {
+		if (suggestionConversationId === null || suggestionProfileId === null) {
+			suggestionConversationId = conversationId;
+			suggestionProfileId = ourProfileId;
+			return;
+		}
+		if (
+			conversationId === suggestionConversationId &&
+			ourProfileId === suggestionProfileId
+		)
+			return;
+		suggestionConversationId = conversationId;
+		suggestionProfileId = ourProfileId;
+		suggestionRequestId++;
+		suggestingReply = false;
+	});
 
 	function remeasureBeforeResizeObserverCatchesUp() {
 		if (form) height = form.clientHeight;
@@ -121,13 +184,15 @@
 		sendMessages: onSend,
 	});
 	setMessageComposerContext(composerContext);
-	onDestroy(
-		sheets.bind({
-			conversationState: getConversationState(),
-			context: composerContext,
-			focusTrigger,
-		}),
-	);
+	const unbindSheets = sheets.bind({
+		conversationState: getConversationState(),
+		context: composerContext,
+		focusTrigger,
+	});
+	onDestroy(() => {
+		suggestionRequestId++;
+		unbindSheets();
+	});
 </script>
 
 <form
@@ -142,6 +207,31 @@
 		onSubmit().catch((error) => console.error(error));
 	}}
 >
+	{#if desktop && textContent.trim() === ""}
+		<div class="flex justify-end">
+			<Button
+				type="button"
+				variant="ghost"
+				size="sm"
+				class="h-8"
+				aria-label="Generate and send a reply with OpenRouter AI"
+				title={canSuggestReply
+					? "The first incoming text and recent context go to OpenRouter. " +
+						"The reply is sent automatically."
+					: "Wait for an incoming text message before using Send with AI."}
+				disabled={disabled || suggestingReply || !canSuggestReply}
+				onclick={() => void suggestReply()}
+			>
+				{#if suggestingReply}
+					<CircleNotchIcon class="size-4 animate-spin" />
+					Generating and sending…
+				{:else}
+					<SparkleIcon class="size-4" />
+					Send with AI
+				{/if}
+			</Button>
+		</div>
+	{/if}
 	{#if replyTo}
 		<ComposerReplyPreview message={replyTo} onCancel={onCancelReply} />
 	{/if}

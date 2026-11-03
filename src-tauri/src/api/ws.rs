@@ -14,8 +14,9 @@ use crate::state::AppState;
 
 pub fn spawn_ws_task(app: AppHandle) {
 	{
+		let task_app = app.clone();
 		let app = app.clone();
-		tauri::async_runtime::spawn(async move {
+		let task = tauri::async_runtime::spawn(async move {
 			let client = {
 				let state = app.state::<AppState>();
 				let Ok(c) = state.client() else { return };
@@ -39,11 +40,13 @@ pub fn spawn_ws_task(app: AppHandle) {
 				}
 			}
 		});
+		task_app.state::<AppState>().keep_task(task);
 	}
 
 	{
+		let task_app = app.clone();
 		let app = app.clone();
-		tauri::async_runtime::spawn(async move {
+		let task = tauri::async_runtime::spawn(async move {
 			let client = {
 				let state = app.state::<AppState>();
 				let Ok(c) = state.client() else { return };
@@ -58,11 +61,13 @@ pub fn spawn_ws_task(app: AppHandle) {
 				emit_ws_state(&app, &rx.borrow());
 			}
 		});
+		task_app.state::<AppState>().keep_task(task);
 	}
 
 	{
+		let task_app = app.clone();
 		let app = app.clone();
-		tauri::async_runtime::spawn(async move {
+		let task = tauri::async_runtime::spawn(async move {
 			let client = {
 				let state = app.state::<AppState>();
 				let Ok(c) = state.client() else { return };
@@ -112,6 +117,7 @@ pub fn spawn_ws_task(app: AppHandle) {
 				}
 			}
 		});
+		task_app.state::<AppState>().keep_task(task);
 	}
 }
 
@@ -216,10 +222,8 @@ mod tests {
 		let client =
 			grindr::GrindrClient::new(grindr::DeviceInfo::generate(), None)
 				.expect("client");
-		let state = AppState {
-			client: OnceLock::new(),
-		};
-		assert!(state.client.set(client).is_ok());
+		let state = AppState::default();
+		state.set_client(client);
 
 		mock_builder()
 			.manage(state)
@@ -231,7 +235,7 @@ mod tests {
 	#[tokio::test]
 	async fn reconnecting_a_downed_socket_touches_neither_flag_nor_transport() {
 		let app = app_with_a_disconnected_client();
-		let client = app.state::<AppState>().client().unwrap().clone();
+		let client = app.state::<AppState>().client().unwrap();
 		let before = client.current_device().await.device_id;
 		client.set_active(false);
 		app.state::<SessionRecovery>()

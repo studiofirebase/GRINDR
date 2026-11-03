@@ -3,21 +3,44 @@ use std::sync::{Mutex, PoisonError};
 mod entries;
 #[cfg(any(
 	target_os = "linux",
-	all(target_os = "macos", not(feature = "keychain"))
+	all(
+		target_os = "macos",
+		not(feature = "keychain"),
+		not(feature = "memory-storage")
+	)
 ))]
 mod file_store;
 mod keyring;
-#[cfg(any(test, all(target_os = "macos", feature = "keychain")))]
+#[cfg(any(
+	test,
+	all(
+		target_os = "macos",
+		feature = "keychain",
+		not(feature = "memory-storage")
+	)
+))]
 mod legacy;
+mod profiles;
 
-pub use entries::{AuthStorage, DeviceStorage, SigningKeyStorage};
+pub use entries::{
+	AuthStorage, DeviceStorage, OpenRouterKeyStorage, SigningKeyStorage,
+};
 pub(crate) use keyring::{entry, Entry};
-#[cfg(all(target_os = "macos", feature = "keychain"))]
+#[cfg(all(
+	target_os = "macos",
+	feature = "keychain",
+	not(feature = "memory-storage")
+))]
 pub use legacy::adopt_legacy_items;
+pub use profiles::{ProfileStorage, SavedProfile, MAX_PROFILES};
 
 #[cfg(any(
 	target_os = "linux",
-	all(target_os = "macos", not(feature = "keychain"))
+	all(
+		target_os = "macos",
+		not(feature = "keychain"),
+		not(feature = "memory-storage")
+	)
 ))]
 pub fn init_file_store(base: std::path::PathBuf) {
 	file_store::init(base);
@@ -28,6 +51,7 @@ pub fn init_file_store(base: std::path::PathBuf) {
 pub enum StorageBackend {
 	Keyring,
 	File,
+	Memory,
 	Unavailable,
 }
 
@@ -35,8 +59,14 @@ const STARTUP_PROBE: &str = "startup-probe";
 
 const HAS_FILE_STORE: bool = cfg!(any(
 	target_os = "linux",
-	all(target_os = "macos", not(feature = "keychain"))
+	all(
+		target_os = "macos",
+		not(feature = "keychain"),
+		not(feature = "memory-storage")
+	)
 ));
+const IS_MEMORY_STORE: bool =
+	cfg!(all(target_os = "macos", feature = "memory-storage"));
 
 pub fn init_keyring() -> StorageBackend {
 	static USABLE: Mutex<Option<StorageBackend>> = Mutex::new(None);
@@ -60,6 +90,7 @@ fn cached(
 
 fn probe_keyring() -> StorageBackend {
 	let backend = match install_platform_store() {
+		Ok(()) if IS_MEMORY_STORE => StorageBackend::Memory,
 		Ok(()) => StorageBackend::Keyring,
 		Err(e) if HAS_FILE_STORE => {
 			tracing::warn!(
@@ -95,7 +126,19 @@ fn install_platform_store() -> Result<(), String> {
 	Ok(())
 }
 
-#[cfg(all(target_os = "macos", feature = "keychain"))]
+#[cfg(all(target_os = "macos", feature = "memory-storage"))]
+fn install_platform_store() -> Result<(), String> {
+	let store =
+		keyring_core::mock::Store::new().map_err(|error| error.to_string())?;
+	keyring_core::set_default_store(store);
+	Ok(())
+}
+
+#[cfg(all(
+	target_os = "macos",
+	feature = "keychain",
+	not(feature = "memory-storage")
+))]
 fn install_platform_store() -> Result<(), String> {
 	let store = apple_native_keyring_store::keychain::Store::new()
 		.map_err(|e| e.to_string())?;
@@ -103,7 +146,11 @@ fn install_platform_store() -> Result<(), String> {
 	Ok(())
 }
 
-#[cfg(all(target_os = "macos", not(feature = "keychain")))]
+#[cfg(all(
+	target_os = "macos",
+	not(feature = "keychain"),
+	not(feature = "memory-storage")
+))]
 fn install_platform_store() -> Result<(), String> {
 	Err("built without the keychain feature".to_owned())
 }
@@ -145,7 +192,11 @@ fn round_trips() -> bool {
 	test,
 	any(
 		target_os = "linux",
-		all(target_os = "macos", not(feature = "keychain"))
+		all(
+			target_os = "macos",
+			not(feature = "keychain"),
+			not(feature = "memory-storage")
+		)
 	)
 ))]
 pub(crate) mod test_support {
@@ -173,7 +224,11 @@ pub(crate) mod test_support {
 	test,
 	any(
 		target_os = "linux",
-		all(target_os = "macos", not(feature = "keychain"))
+		all(
+			target_os = "macos",
+			not(feature = "keychain"),
+			not(feature = "memory-storage")
+		)
 	)
 ))]
 mod tests {
@@ -183,8 +238,8 @@ mod tests {
 	use super::test_support::{lock, with_file_store};
 	use super::*;
 
-	const PERSISTED_ENTRIES: [&str; 3] =
-		["device-info", "device-signing-key", "session"];
+	const PERSISTED_ENTRIES: [&str; 4] =
+		["device-info", "device-signing-key", "profiles", "session"];
 
 	fn entry(user: &str) -> keyring_core::Entry {
 		keyring_core::Entry::new("open-grind", user).unwrap()
@@ -208,12 +263,120 @@ mod tests {
 		.unwrap()
 	}
 
+	fn saved_profile(profile_id: &str) -> SavedProfile {
+		let mut credentials = credentials("auth-token");
+		credentials.profile_id = Some(profile_id.to_owned());
+		SavedProfile {
+			profile_id: profile_id.to_owned(),
+			name: format!("profile {profile_id}"),
+			device: grindr::DeviceInfo::generate(),
+			credentials,
+			signing_key: None,
+			geohash: None,
+		}
+	}
+
+	#[test]
+	fn profiles_are_persisted_independently_and_active_profile_is_tracked() {
+		with_file_store(|_| {
+			ProfileStorage::save_active_profile(saved_profile("42")).unwrap();
+			ProfileStorage::save_profile(saved_profile("43")).unwrap();
+			let saved = ProfileStorage::load().unwrap();
+			assert_eq!(saved.profiles.len(), 2);
+			assert_eq!(saved.active_profile_id.as_deref(), Some("42"));
+
+			ProfileStorage::set_active(Some("43".to_owned())).unwrap();
+			ProfileStorage::remove("42").unwrap();
+			let saved = ProfileStorage::load().unwrap();
+			assert_eq!(saved.profiles.len(), 1);
+			assert_eq!(saved.profiles[0].profile_id, "43");
+			assert_eq!(saved.active_profile_id.as_deref(), Some("43"));
+		});
+	}
+
+	#[test]
+	fn profile_locations_survive_session_refreshes_and_can_be_cleared() {
+		with_file_store(|_| {
+			let mut profile = saved_profile("42");
+			profile.geohash = Some("u33dc1c1f1s0".to_owned());
+			ProfileStorage::save_active_profile(profile).unwrap();
+
+			ProfileStorage::save_active_profile(saved_profile("42")).unwrap();
+			assert_eq!(
+				ProfileStorage::load().unwrap().profiles[0]
+					.geohash
+					.as_deref(),
+				Some("u33dc1c1f1s0")
+			);
+
+			ProfileStorage::save_active_profile_with_location(
+				saved_profile("42"),
+				None,
+			)
+			.unwrap();
+			assert_eq!(
+				ProfileStorage::load().unwrap().profiles[0].geohash,
+				None
+			);
+		});
+	}
+
+	#[test]
+	fn profiles_saved_before_location_support_load_with_no_location() {
+		#[derive(serde::Serialize)]
+		struct LegacyProfile<'a> {
+			profile_id: &'a str,
+			name: &'a str,
+			device: &'a grindr::DeviceInfo,
+			credentials: &'a grindr::Credentials,
+			signing_key: &'a Option<grindr::DeviceSigningKey>,
+		}
+
+		#[derive(serde::Serialize)]
+		struct LegacyProfiles<'a> {
+			active_profile_id: Option<&'a str>,
+			profiles: Vec<LegacyProfile<'a>>,
+		}
+
+		with_file_store(|_| {
+			let profile = saved_profile("42");
+			let legacy = LegacyProfiles {
+				active_profile_id: Some("42"),
+				profiles: vec![LegacyProfile {
+					profile_id: &profile.profile_id,
+					name: &profile.name,
+					device: &profile.device,
+					credentials: &profile.credentials,
+					signing_key: &profile.signing_key,
+				}],
+			};
+			entry("profiles")
+				.set_secret(&rmp_serde::to_vec_named(&legacy).unwrap())
+				.unwrap();
+
+			let loaded = ProfileStorage::load().unwrap();
+			assert_eq!(loaded.profiles[0].geohash, None);
+		});
+	}
+
+	#[test]
+	fn the_profile_store_enforces_its_five_profile_limit() {
+		with_file_store(|_| {
+			for id in ["1", "2", "3", "4", "5"] {
+				ProfileStorage::save_profile(saved_profile(id)).unwrap();
+			}
+			assert!(ProfileStorage::save_profile(saved_profile("6")).is_err());
+			assert_eq!(ProfileStorage::load().unwrap().profiles.len(), 5);
+		});
+	}
+
 	#[test]
 	fn the_installed_store_backs_every_keyring_entry() {
 		with_file_store(|base| {
 			DeviceStorage::save(&grindr::DeviceInfo::generate()).unwrap();
 			AuthStorage::set_credentials(&credentials("auth-token")).unwrap();
 			SigningKeyStorage::save(&signing_key()).unwrap();
+			ProfileStorage::save_profile(saved_profile("42")).unwrap();
 
 			let mut written: Vec<_> =
 				std::fs::read_dir(base.join("credentials"))
@@ -618,5 +781,32 @@ mod tests {
 		DeviceStorage::delete();
 		AuthStorage::delete_credentials();
 		SigningKeyStorage::delete();
+	}
+}
+
+#[cfg(all(test, target_os = "macos", feature = "memory-storage"))]
+mod memory_storage_tests {
+	use super::*;
+
+	fn credentials() -> grindr::Credentials {
+		grindr::Credentials {
+			email: "memory@example.com".to_owned(),
+			profile_id: Some("memory-profile".to_owned()),
+			auth_token: "memory-token".to_owned(),
+			kind: grindr::SessionKind::Email,
+			third_party_user_id: None,
+		}
+	}
+
+	#[test]
+	fn session_data_exists_only_in_the_current_memory_store() {
+		assert_eq!(init_keyring(), StorageBackend::Memory);
+		let saved = credentials();
+		AuthStorage::set_credentials(&saved).unwrap();
+		assert_eq!(AuthStorage::get_credentials().unwrap(), Some(saved));
+
+		keyring_core::unset_default_store();
+		install_platform_store().unwrap();
+		assert!(AuthStorage::get_credentials().unwrap().is_none());
 	}
 }

@@ -71,7 +71,7 @@ pub async fn upload_media(
 		send: request.send(),
 	})
 	.await?
-	.map_err(|e| AppError::from_client_error(e, client))?;
+	.map_err(|e| AppError::from_client_error(e, &client))?;
 
 	encode_response(&RawResponse {
 		status: raw.status,

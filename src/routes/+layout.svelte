@@ -18,6 +18,7 @@
 	import { abortBackdropBlurTrialGesture } from "$lib/blur/calibration/trial.svelte";
 	import { hydrateBackdropCompositing } from "$lib/blur/compositing.svelte";
 	import { applyBackdropBlurQuality } from "$lib/blur/quality.svelte";
+	import { demoEnabled } from "$lib/demo";
 	import {
 		applyAndroidInsets,
 		applyBackGestureHandler,
@@ -180,6 +181,19 @@
 ></div>
 <FrostFilters />
 <IconContext values={{ "aria-hidden": true }}>
+	{#if demoEnabled}
+		<div
+			role="status"
+			class="pointer-events-none fixed inset-x-0 z-[100] flex justify-center px-3"
+			style:top="calc(var(--safe-area-top) + 0.5rem)"
+		>
+			<span
+				class="rounded-full border border-amber-500/40 bg-background/95 px-3 py-1 text-xs text-amber-200 shadow-lg"
+			>
+				Demo mode · no live Grindr account
+			</span>
+		</div>
+	{/if}
 	<div data-slot="toast-host" class="contents">
 		<Toaster
 			position="bottom-center"

@@ -260,6 +260,16 @@ nix run .#build-macos -- --app-store
 
 The default build uses two private macOS APIs: WebKit's `_setUseSystemAppearance:` for `-apple-visual-effect`, and `drawsBackground`.
 
+## iOS and TestFlight
+
+The iOS target uses a numeric marketing version in `src-tauri/tauri.ios.conf.json`; the shared development version includes a prerelease suffix that Apple does not accept.
+
+```bash
+bun run build:ios:testflight -- --build-number 1
+```
+
+The iOS-only bundle identifier is `com.italosantos.opengrind`, and its development team (`82S989KJVB`) is set in `src-tauri/tauri.ios.conf.json`. `APPLE_DEVELOPMENT_TEAM` can override that team. Increase `--build-number` for each upload. This command exports a TestFlight-ready IPA under `src-tauri/gen/apple/build/arm64/`; upload it with Transporter or Xcode, then assign the processed build to a TestFlight tester group.
+
 ### Sign and notarize macOS build
 
 | Variable              | Default | Description                                                                     |

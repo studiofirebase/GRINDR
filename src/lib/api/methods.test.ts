@@ -317,6 +317,40 @@ describe("callMethod", () => {
 		await expect(callMethod("sign_out")).resolves.toBeNull();
 	});
 
+	it("parses the saved profile list without exposing credentials", async () => {
+		invokeMock.mockResolvedValueOnce([
+			{ profileId: "42", name: "one@example.com", active: true },
+			{ profileId: "43", name: "two@example.com", active: false },
+		]);
+
+		await expect(callMethod("profile_list")).resolves.toEqual([
+			{ profileId: "42", name: "one@example.com", active: true },
+			{ profileId: "43", name: "two@example.com", active: false },
+		]);
+	});
+
+	it("sends only the selected profile id when switching sessions", async () => {
+		invokeMock.mockResolvedValueOnce("u33dc1c1f1s0");
+
+		await expect(
+			callMethod("profile_switch", { profileId: "43" }),
+		).resolves.toBe("u33dc1c1f1s0");
+		expect(invokeMock).toHaveBeenCalledWith("profile_switch", {
+			profileId: "43",
+		});
+	});
+
+	it("stores the active profile location using a validated geohash", async () => {
+		invokeMock.mockResolvedValueOnce(null);
+
+		await expect(
+			callMethod("profile_set_location", { geohash: "u33dc1c1f1s0" }),
+		).resolves.toBeNull();
+		expect(invokeMock).toHaveBeenCalledWith("profile_set_location", {
+			geohash: "u33dc1c1f1s0",
+		});
+	});
+
 	it("rejects a response that does not match the declared schema", async () => {
 		invokeMock.mockResolvedValueOnce({ profileId: "not a number" });
 

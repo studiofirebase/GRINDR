@@ -10,6 +10,7 @@
 	import { getOrCreateConversationsState } from "$lib/chat/conversations-context.svelte";
 	import BrokenUserAvatar from "$lib/components/profile/BrokenUserAvatar.svelte";
 	import UserAvatar from "$lib/components/profile/UserAvatar.svelte";
+	import ProfileSwitcher from "$lib/components/shared/ProfileSwitcher.svelte";
 	import ProgressiveBlur from "$lib/components/shared/ProgressiveBlur.svelte";
 	import { Badge } from "$lib/components/ui/badge";
 	import { tabsListVariants } from "$lib/components/ui/tabs";
@@ -134,6 +135,7 @@
 			{/if}
 		</a>
 	</div>
+	<ProfileSwitcher />
 	<a
 		href="/settings"
 		aria-label="Me"

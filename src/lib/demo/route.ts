@@ -108,6 +108,21 @@ export function demoCallMethod(method: string): unknown {
 			return "keyring";
 		case "session_feature_flags":
 			return [];
+		case "profile_list":
+			return [];
+		case "secondary_status":
+			return [];
+		case "bubble_update":
+			return true;
+		case "apple_intelligence_status":
+			return {
+				available: false,
+				message: "Apple Intelligence is unavailable in the demo.",
+			};
+		case "ai_reply_profile_is_active":
+			return false;
+		case "openrouter_api_key_status":
+			return false;
 		default:
 			return null;
 	}

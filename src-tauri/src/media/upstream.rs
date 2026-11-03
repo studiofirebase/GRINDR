@@ -84,7 +84,6 @@ pub async fn admit<R: Runtime>(
 	let client = app
 		.state::<AppState>()
 		.client()
-		.cloned()
 		.map_err(|_| FetchError::Busy)?;
 	Ok((permit, client))
 }

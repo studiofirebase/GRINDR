@@ -15,7 +15,7 @@ const appStore = Bun.argv.includes("--app-store");
 const variant = appStore
 	? ["--config", `${root}/src-tauri/tauri.appstore.conf.json`]
 	: [];
-const features = appStore ? "keychain" : "keychain,private-api";
+const features = appStore ? "keychain" : "private-api";
 const bundles = macosBundle(root, profile);
 const out = `${root}/src-tauri/target/${profile}/artifacts`;
 const adHocOut = `${root}/src-tauri/target/${profile}/ad-hoc`;
@@ -84,6 +84,7 @@ async function notaryCredentials(): Promise<string[] | undefined> {
 }
 
 const SYSTEM_DYLIBS = ["libiconv.2.dylib"];
+const APPLE_INTELLIGENCE_HELPER = "Contents/Resources/apple-intelligence";
 
 async function useSystemDylibs(binary: string): Promise<void> {
 	const linked = await $`otool -L ${binary}`.text();
@@ -105,6 +106,7 @@ async function signAdHoc(app: string): Promise<void> {
 	const binary = `${app}/${EXECUTABLE}`;
 	await $`codesign_allocate -i ${binary} -r -o ${binary}.unsigned`;
 	await $`mv ${binary}.unsigned ${binary}`;
+	await $`rcodesign sign -C /dev/null --code-signature-flags runtime ${app}/${APPLE_INTELLIGENCE_HELPER}`;
 	await $`rcodesign sign -C /dev/null --code-signature-flags runtime ${app}`;
 }
 
@@ -264,6 +266,7 @@ ${zip}
 	await archive(unsigned, reference);
 	await $`rm -rf ${unsigned}`;
 
+	await $`codesign --force --sign ${identity} --options runtime --timestamp ${app}/${APPLE_INTELLIGENCE_HELPER}`;
 	await $`codesign --force --sign ${identity} --options runtime --timestamp ${app}`;
 	if (notary) {
 		await archive(app, zip);

@@ -1,4 +1,9 @@
 import { appLifecycle } from "$lib/api/app-lifecycle.svelte";
+import {
+	awaitBackgroundSwapEnd,
+	backgroundSessionSwapInFlight,
+	swapSettleWaitMs,
+} from "$lib/api/background-session-swap";
 import { signedInProfileId } from "$lib/api/current-session";
 import { awaitHomeLocation } from "$lib/entitlements/honduras-hold";
 import { isMobilePlatform } from "$lib/platform/os";
@@ -122,6 +127,14 @@ class Reconciler {
 	}
 
 	async #dispatch(handlers: FoldedResumeHandler[]): Promise<Promise<void>[]> {
+		// Mid-swap every backend answer belongs to another profile: hold
+		// every subscriber (inbox, grid, media) until the visible session
+		// is back instead of merging the wrong data.
+		if (
+			backgroundSessionSwapInFlight() &&
+			!(await awaitBackgroundSwapEnd(swapSettleWaitMs))
+		)
+			return [];
 		await awaitHomeLocation();
 		const profileId = await signedInProfileId().catch(() => null);
 		if (profileId === null) return [];

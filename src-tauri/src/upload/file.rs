@@ -346,7 +346,7 @@ pub async fn upload_media_file(
 		send,
 	})
 	.await?
-	.map_err(|error| AppError::from_client_error(error, client))?;
+	.map_err(|error| AppError::from_client_error(error, &client))?;
 
 	Ok(UploadOutcome {
 		response: encode_response(&RawResponse {

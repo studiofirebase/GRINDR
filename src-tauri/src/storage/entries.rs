@@ -1,6 +1,7 @@
 pub(super) const DEVICE_INFO: &str = "device-info";
 pub(super) const SESSION: &str = "session";
 pub(super) const SIGNING_KEY: &str = "device-signing-key";
+pub(super) const OPENROUTER_API_KEY: &str = "openrouter-api-key";
 
 use crate::error::AppError;
 
@@ -157,5 +158,34 @@ impl SigningKeyStorage {
 		}
 		tracing::warn!("[signing] stored key was refused, deleting it");
 		Self::delete();
+	}
+}
+
+pub struct OpenRouterKeyStorage;
+
+impl OpenRouterKeyStorage {
+	pub fn load() -> Result<Option<String>, AppError> {
+		let bytes = match super::entry(OPENROUTER_API_KEY)?.get_secret() {
+			Ok(bytes) => bytes,
+			Err(keyring_core::Error::NoEntry) => return Ok(None),
+			Err(error) => return Err(AppError::Auth(error.to_string())),
+		};
+		let key = String::from_utf8(bytes)
+			.map_err(|error| AppError::Auth(error.to_string()))?;
+		let key = key.trim();
+		Ok((!key.is_empty()).then(|| key.to_owned()))
+	}
+
+	pub fn save(api_key: &str) -> Result<(), AppError> {
+		super::entry(OPENROUTER_API_KEY)?
+			.set_secret(api_key.trim().as_bytes())
+			.map_err(|error| AppError::Auth(error.to_string()))
+	}
+
+	pub fn delete() -> Result<(), AppError> {
+		match super::entry(OPENROUTER_API_KEY)?.delete_credential() {
+			Ok(()) | Err(keyring_core::Error::NoEntry) => Ok(()),
+			Err(error) => Err(AppError::Auth(error.to_string())),
+		}
 	}
 }

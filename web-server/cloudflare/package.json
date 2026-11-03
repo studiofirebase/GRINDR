@@ -1,0 +1,14 @@
+{
+	"name": "open-grind-cloudflare",
+	"private": true,
+	"version": "0.1.0",
+	"type": "module",
+	"scripts": {
+		"prep": "bash ./prep.sh",
+		"deploy": "wrangler deploy",
+		"dev": "wrangler dev"
+	},
+	"dependencies": {
+		"@cloudflare/containers": "^0.3.7"
+	}
+}

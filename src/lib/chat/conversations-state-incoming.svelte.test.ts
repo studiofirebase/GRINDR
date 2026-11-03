@@ -3,19 +3,28 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const {
 	getConversationsMock,
 	onIncomingMessage,
+	onAutomaticReply,
 	currentPage,
 	singleColumn,
 	messageSentHandlers,
+	reconcileHandlers,
+	scanUnreadAutomaticReplies,
 } = vi.hoisted(() => ({
 	getConversationsMock: vi.fn(),
 	onIncomingMessage: vi.fn(),
+	onAutomaticReply: vi.fn(),
 	currentPage: { route: { id: "/(protected)/chat" } },
 	singleColumn: { current: false },
 	messageSentHandlers: [] as ((event: unknown) => void)[],
+	reconcileHandlers: [] as ((cause: string) => void)[],
+	scanUnreadAutomaticReplies: vi.fn(() => Promise.resolve()),
 }));
 
 vi.mock("$app/state", () => ({ page: currentPage }));
 vi.mock("$lib/api/error-toast", () => ({ showErrorToast: vi.fn() }));
+vi.mock("$lib/chat/automatic-replies", () => ({
+	scanUnreadAutomaticRepliesForProfile: scanUnreadAutomaticReplies,
+}));
 vi.mock("$lib/api/messaging/conversations", () => ({
 	getConversations: getConversationsMock,
 	markConversationAsRead: vi.fn(() => Promise.resolve()),
@@ -25,7 +34,12 @@ vi.mock("$lib/api/messaging/conversations", () => ({
 }));
 vi.mock("$lib/util/breakpoints.svelte", () => ({ below: () => singleColumn }));
 vi.mock("$lib/util/reconcile", () => ({
-	reconciler: { subscribe: () => vi.fn() },
+	reconciler: {
+		subscribe(handler: (cause: string) => void) {
+			reconcileHandlers.push(handler);
+			return vi.fn();
+		},
+	},
 }));
 vi.mock("$lib/ws.svelte", async (importOriginal) => ({
 	...(await importOriginal<typeof import("$lib/ws.svelte")>()),
@@ -38,6 +52,7 @@ vi.mock("$lib/ws.svelte", async (importOriginal) => ({
 	},
 }));
 
+import { beginBackgroundSessionSwap } from "$lib/api/background-session-swap";
 import type { Conversation } from "$lib/model/messaging/conversations";
 import { ConversationsState } from "./conversations-state.svelte";
 import {
@@ -59,6 +74,8 @@ beforeEach(() => {
 	currentPage.route.id = "/(protected)/chat";
 	singleColumn.current = false;
 	messageSentHandlers.length = 0;
+	reconcileHandlers.length = 0;
+	scanUnreadAutomaticReplies.mockClear();
 });
 
 describe("ConversationsState incoming-message handler (P6.3)", () => {
@@ -74,6 +91,7 @@ describe("ConversationsState incoming-message handler (P6.3)", () => {
 		const state = new ConversationsState({
 			ourProfileId: OUR_ID,
 			onIncomingMessage,
+			onAutomaticReply,
 		});
 		await settled(state);
 		return state;
@@ -109,6 +127,36 @@ describe("ConversationsState incoming-message handler (P6.3)", () => {
 		expect(onIncomingMessage).not.toHaveBeenCalled();
 	});
 
+	it("dispatches automatic replies for incoming messages even when filters hide the conversation", async () => {
+		getConversationsMock.mockResolvedValue({ entries: [], nextPage: null });
+		const state = new ConversationsState({
+			ourProfileId: OUR_ID,
+			onIncomingMessage,
+			onAutomaticReply,
+		});
+		await settled(state);
+		const message = fromPeer("hidden:1", 2000);
+
+		emitMessageSent(message);
+		await microtasks();
+
+		expect(onAutomaticReply).toHaveBeenCalledExactlyOnceWith(message);
+		expect(onIncomingMessage).not.toHaveBeenCalled();
+	});
+
+	it.each(["reconnect", "resync", "resume"])(
+		"rechecks unread messages after a websocket %s",
+		async (cause) => {
+			await stateAwayFromTheInbox();
+
+			reconcileHandlers[0]?.(cause);
+
+			expect(scanUnreadAutomaticReplies).toHaveBeenCalledExactlyOnceWith(
+				OUR_ID,
+			);
+		},
+	);
+
 	it("hands the message over as in view while the conversations list is on screen", async () => {
 		const state = await stateAwayFromTheInbox();
 		currentPage.route.id = "/(protected)/chat";
@@ -121,6 +169,77 @@ describe("ConversationsState incoming-message handler (P6.3)", () => {
 			expect.objectContaining({ inView: true }),
 		);
 		expect(entryFor(state, "a:1").data.unreadCount).toBe(1);
+	});
+
+	it("hands the message over as out of view on a wide screen away from chat", async () => {
+		currentPage.route.id = "/(protected)/(navbar)";
+		singleColumn.current = false;
+		getConversationsMock.mockResolvedValue({
+			entries: [conversation("a:1", 1000)],
+			nextPage: null,
+		});
+		const state = new ConversationsState({
+			ourProfileId: OUR_ID,
+			onIncomingMessage,
+			onAutomaticReply,
+		});
+		await settled(state);
+		const message = fromPeer("a:1", 2000);
+
+		emitMessageSent(message);
+
+		expect(onIncomingMessage).toHaveBeenCalledExactlyOnceWith({
+			message,
+			conversation: entryFor(state, "a:1"),
+			inView: false,
+		});
+	});
+
+	it("hands the message over as in view beside an open conversation on a wide screen", async () => {
+		currentPage.route.id = "/(protected)/chat/[conversationId]";
+		singleColumn.current = false;
+		getConversationsMock.mockResolvedValue({
+			entries: [conversation("a:1", 1000)],
+			nextPage: null,
+		});
+		const state = new ConversationsState({
+			ourProfileId: OUR_ID,
+			onIncomingMessage,
+			onAutomaticReply,
+		});
+		await settled(state);
+
+		emitMessageSent(fromPeer("a:1", 2000));
+
+		expect(onIncomingMessage).toHaveBeenCalledExactlyOnceWith(
+			expect.objectContaining({ inView: true }),
+		);
+		expect(entryFor(state, "a:1").data.unreadCount).toBe(1);
+	});
+
+	it("holds an incoming message until a background session swap settles", async () => {
+		const state = await stateAwayFromTheInbox();
+		const endSwap = beginBackgroundSessionSwap();
+		try {
+			const message = fromPeer("a:1", 2000);
+
+			emitMessageSent(message);
+			await microtasks();
+
+			expect(onIncomingMessage).not.toHaveBeenCalled();
+
+			endSwap();
+			await vi.waitFor(() =>
+				expect(onIncomingMessage).toHaveBeenCalledExactlyOnceWith({
+					message,
+					conversation: entryFor(state, "a:1"),
+					inView: false,
+				}),
+			);
+			expect(entryFor(state, "a:1").data.unreadCount).toBe(1);
+		} finally {
+			endSwap();
+		}
 	});
 });
 

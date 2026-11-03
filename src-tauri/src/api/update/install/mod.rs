@@ -1,8 +1,10 @@
 #[cfg(target_os = "android")]
 mod android;
+#[cfg(target_os = "ios")]
+mod ios;
 #[cfg(target_os = "android")]
 pub use android::AndroidUpdater;
-#[cfg(not(target_os = "android"))]
+#[cfg(desktop)]
 mod desktop;
 mod hold;
 
@@ -144,8 +146,10 @@ pub fn probe(app: &tauri::AppHandle, component: &Component) -> Baseline {
 
 #[cfg(target_os = "android")]
 use android as platform;
-#[cfg(not(target_os = "android"))]
+#[cfg(desktop)]
 use desktop as platform;
+#[cfg(target_os = "ios")]
+use ios as platform;
 
 pub use platform::{
 	enforce_home, install, install_pending, open_install_permission_settings,

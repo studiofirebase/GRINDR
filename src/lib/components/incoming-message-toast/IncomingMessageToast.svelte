@@ -22,6 +22,10 @@
 
 	const TAP_SLOP_PX = 10;
 
+	const label = $derived(
+		`Open conversation with ${sender?.name ?? "Someone"}`,
+	);
+
 	let press: AbortController | null = null;
 
 	onDestroy(() => press?.abort());
@@ -61,12 +65,14 @@
 <div
 	role="button"
 	tabindex={0}
-	class="flex h-14 w-full items-center gap-2 rounded-2xl border border-border bg-popover p-2 pe-3 text-start"
+	aria-label={label}
+	class="flex w-full items-center gap-3 p-1 text-start"
 	onpointerdown={pressed}
 >
 	<UserAvatar
 		mediaHash={sender?.avatarMediaHash ?? null}
-		class="size-10 shrink-0 rounded-xl bg-neutral-700 *:rounded-xl"
+		size="xl"
+		class="size-16 shrink-0 overflow-hidden rounded-full ring-2 ring-border"
 	/>
 	<div class="flex min-w-0 flex-col">
 		{#if sender && sender.name}

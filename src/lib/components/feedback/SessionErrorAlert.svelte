@@ -4,6 +4,7 @@
 	import { toast } from "svelte-sonner";
 	import z from "zod";
 
+	import { backgroundSessionSwapInFlight } from "$lib/api/background-session-swap";
 	import {
 		asAppError,
 		blockedKindOf,
@@ -36,6 +37,10 @@
 	onMount(() => {
 		const unlisteners = [
 			listen("auth:session-error", (event) => {
+				// Refresh failures raised while a background scan owns the
+				// backend session describe another saved profile, not the
+				// user's session: never dialog or sign out for them.
+				if (backgroundSessionSwapInFlight()) return;
 				const parsed = payloadSchema.safeParse(event.payload);
 				if (!parsed.success) {
 					console.error(
