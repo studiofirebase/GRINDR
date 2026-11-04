@@ -9,8 +9,10 @@ destes fazem parte do repositorio.
 ```sh
 cd open-grind-host-src/web-server/cloudflare
 
-# 1. Frontend atualizado (na raiz do app)
-cd ../.. && bun run build && cd web-server/cloudflare
+# 1. Frontend atualizado (na raiz do app). OPEN_GRIND_WEB=1 e obrigatorio:
+# sem ele o bridge web (`installWebBridge`) nao instala e a primeira pagina
+# quebra com "Cannot read properties of undefined (reading 'transformCallback')".
+cd ../.. && OPEN_GRIND_WEB=1 bun run build && cd web-server/cloudflare
 
 # 2. Dependencias do Worker
 bun install

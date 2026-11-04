@@ -2,6 +2,11 @@ name = "open-grind-web"
 main = "worker/index.ts"
 compatibility_date = "2026-10-26"
 
+# Rota de topo (fora de [vars]): atende meuprofile.com (zona na mesma conta).
+routes = [
+	{ pattern = "meuprofile.com/*", zone_name = "meuprofile.com" },
+]
+
 [[containers]]
 class_name = "OpenGrindWeb"
 image = "./Dockerfile"
@@ -20,8 +25,4 @@ new_sqlite_classes = ["OpenGrindWeb"]
 OG_ORIGIN = "https://meuprofile.com"
 OG_ADMIN_USER = "italosantos"
 
-# Dominio proprio: o Worker atende meuprofile.com (zona na mesma conta).
 # OG_PASSWORD vai como secret (wrangler secret put OG_PASSWORD).
-routes = [
-	{ pattern = "meuprofile.com/*", zone_name = "meuprofile.com" },
-]
