@@ -93,6 +93,18 @@ function askForPassword(): Promise<void> {
 					overlay.remove();
 					passwordPrompt = undefined;
 					resolve();
+					// Depois do login, oferece o cadastro na mesma tela
+					// quando o admin principal ainda nao criou ninguem.
+					void fetch("/api/admins", { credentials: "same-origin" })
+						.then((response) =>
+							response.ok ? response.json() : null,
+						)
+						.then((admins: unknown) => {
+							if (Array.isArray(admins) && admins.length <= 1) {
+								openCreateAdminDialog();
+							}
+						})
+						.catch(() => undefined);
 				})
 				.catch((cause: Error) => {
 					error.textContent = cause.message;
