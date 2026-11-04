@@ -69,45 +69,111 @@ function askForPassword(): Promise<void> {
 		const overlay = document.createElement("div");
 		overlay.style.cssText =
 			"position:fixed;inset:0;z-index:99999;display:flex;align-items:center;justify-content:center;background:#0a0a0a;color:#fff;font:16px system-ui";
-		overlay.innerHTML = `<form style="display:grid;gap:12px;width:min(320px,90vw)">
+		overlay.innerHTML = `<div style="display:grid;gap:12px;width:min(340px,90vw)">
 			<strong>Open Grind — Admin</strong>
-			<input name="username" autocomplete="username" autocapitalize="none" placeholder="Usuário admin" style="${fieldStyle}" />
-			<input name="password" type="password" autocomplete="current-password" placeholder="Senha" style="${fieldStyle}" />
-			<label style="display:flex;gap:8px;align-items:center;font-size:14px"><input name="remember" type="checkbox" checked /> Manter conectado</label>
-			<button style="${buttonStyle}">Entrar</button>
-			<small data-error style="color:#f87171"></small></form>`;
+			<div style="display:flex;gap:8px">
+				<button type="button" data-tab="login" style="${buttonStyle};flex:1">Entrar</button>
+				<button type="button" data-tab="create" style="${fieldStyle};flex:1;cursor:pointer;opacity:.6">Criar conta</button>
+			</div>
+			<form data-login-form style="display:grid;gap:12px">
+				<input name="username" autocomplete="username" autocapitalize="none" placeholder="Usuário admin" style="${fieldStyle}" />
+				<input name="password" type="password" autocomplete="current-password" placeholder="Senha" style="${fieldStyle}" />
+				<label style="display:flex;gap:8px;align-items:center;font-size:14px"><input name="remember" type="checkbox" checked /> Manter conectado</label>
+				<button style="${buttonStyle}">Entrar</button>
+				<small data-error style="color:#f87171"></small>
+			</form>
+			<form data-create-form style="display:none;gap:12px">
+				<small style="color:#aaa">Crie seu acesso: voce administra apenas os seus proprios perfis.</small>
+				<input name="newUsername" autocomplete="username" autocapitalize="none" placeholder="Novo usuário (a-z, 0-9, _ -)" style="${fieldStyle}" />
+				<input name="newPassword" type="password" autocomplete="new-password" placeholder="Nova senha (mín. 8)" style="${fieldStyle}" />
+				<label style="display:flex;gap:8px;align-items:center;font-size:14px"><input name="remember" type="checkbox" checked /> Manter conectado</label>
+				<button style="${buttonStyle}">Criar e entrar</button>
+				<small data-error style="color:#f87171"></small>
+			</form></div>`;
 		document.body.append(overlay);
-		const form = overlay.querySelector("form")!;
-		const field = (name: string) =>
-			form.elements.namedItem(name) as HTMLInputElement;
-		const error = overlay.querySelector("[data-error]")!;
-		field("username").focus();
-		form.addEventListener("submit", (event) => {
+		const loginForm = overlay.querySelector(
+			"[data-login-form]",
+		) as HTMLFormElement;
+		const createForm = overlay.querySelector(
+			"[data-create-form]",
+		) as HTMLFormElement;
+		const loginTab = overlay.querySelector(
+			'[data-tab="login"]',
+		) as HTMLButtonElement;
+		const createTab = overlay.querySelector(
+			'[data-tab="create"]',
+		) as HTMLButtonElement;
+		const loginError = loginForm.querySelector("[data-error]")!;
+		const createError = createForm.querySelector("[data-error]")!;
+		const showTab = (mode: "login" | "create") => {
+			const isLogin = mode === "login";
+			loginForm.style.display = isLogin ? "grid" : "none";
+			createForm.style.display = isLogin ? "none" : "grid";
+			loginTab.style.opacity = isLogin ? "1" : "0.6";
+			createTab.style.opacity = isLogin ? "0.6" : "1";
+			(isLogin ? loginForm : createForm).querySelector("input")?.focus();
+		};
+		loginTab.addEventListener("click", () => showTab("login"));
+		createTab.addEventListener("click", () => showTab("create"));
+		// POST direto, sem passar pelo interceptador de 401: aqui o
+		// passwordPrompt atual ainda esta pendente e reutiliza-lo travaria.
+		const rawPost = async <T>(path: string, body: unknown): Promise<T> => {
+			const response = await fetch(path, {
+				method: "POST",
+				credentials: "same-origin",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify(body),
+			});
+			const parsed = (await response.json().catch(() => ({}))) as {
+				error?: string;
+			} & T;
+			if (!response.ok) {
+				throw new Error(parsed.error ?? `HTTP ${response.status}`);
+			}
+			return parsed;
+		};
+		const done = () => {
+			overlay.remove();
+			passwordPrompt = undefined;
+			resolve();
+		};
+		loginForm.querySelector("input")?.focus();
+		loginForm.addEventListener("submit", (event) => {
 			event.preventDefault();
+			const field = (name: string) =>
+				loginForm.elements.namedItem(name) as HTMLInputElement;
 			void post("/api/login", {
 				username: field("username").value,
 				password: field("password").value,
 				remember: field("remember").checked,
 			})
 				.then(() => {
-					overlay.remove();
-					passwordPrompt = undefined;
-					resolve();
-					// Depois do login, oferece o cadastro na mesma tela
-					// quando o admin principal ainda nao criou ninguem.
-					void fetch("/api/admins", { credentials: "same-origin" })
-						.then((response) =>
-							response.ok ? response.json() : null,
-						)
-						.then((admins: unknown) => {
-							if (Array.isArray(admins) && admins.length <= 1) {
-								openCreateAdminDialog();
-							}
-						})
-						.catch(() => undefined);
+					// Vai direto ao fluxo do app (ex.: login no Grindr).
+					// Quem quiser criar outro admin usa a aba Criar conta
+					// ou o menu Profiles > Criar outro admin.
+					done();
 				})
 				.catch((cause: Error) => {
-					error.textContent = cause.message;
+					loginError.textContent = cause.message;
+				});
+		});
+		createForm.addEventListener("submit", (event) => {
+			event.preventDefault();
+			const field = (name: string) =>
+				createForm.elements.namedItem(name) as HTMLInputElement;
+			createError.textContent = "";
+			// Registro público: cria um admin comum (nunca super) com
+			// perfis próprios e isolados, sem pedir o admin principal.
+			void rawPost("/api/register", {
+				username: field("newUsername").value,
+				password: field("newPassword").value,
+				remember: field("remember").checked,
+			})
+				.then(() => {
+					done();
+				})
+				.catch((cause: Error) => {
+					createError.textContent = cause.message;
 				});
 		});
 	});

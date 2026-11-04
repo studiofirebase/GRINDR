@@ -21,6 +21,7 @@ use tokio::sync::Mutex;
 use tower_http::services::{ServeDir, ServeFile};
 
 const MAX_PROFILES: usize = 5;
+const MAX_ACCOUNTS: usize = 20;
 const SESSION_COOKIE: &str = "og_session";
 const SESSION_TTL: Duration = Duration::from_secs(60 * 60 * 12);
 const REMEMBER_TTL: Duration = Duration::from_secs(60 * 60 * 24 * 90);
@@ -207,7 +208,8 @@ async fn require_auth(
 ) -> Response {
 	let path = request.uri().path().to_owned();
 	let access_mode = app.access_email.is_some();
-	let open = path == "/api/health" || (!access_mode && path == "/api/login");
+	let open = path == "/api/health"
+		|| (!access_mode && (path == "/api/login" || path == "/api/register"));
 	if path == "/api/google-handoff" {
 		return google_handoff(app, request).await;
 	}
@@ -354,6 +356,78 @@ async fn login(
 			"invalid username or password",
 		));
 	}
+	let ttl = if body.remember {
+		REMEMBER_TTL
+	} else {
+		SESSION_TTL
+	};
+	let token = random_token();
+	app.sessions
+		.lock()
+		.await
+		.insert(token.clone(), (username, Instant::now() + ttl));
+	let secure = app
+		.origin
+		.as_deref()
+		.is_some_and(|o| o.starts_with("https://"));
+	let max_age = if body.remember {
+		format!("; Max-Age={}", REMEMBER_TTL.as_secs())
+	} else {
+		String::new()
+	};
+	let cookie = format!(
+		"{SESSION_COOKIE}={token}; HttpOnly; SameSite=Strict; Path=/{max_age}{}",
+		if secure { "; Secure" } else { "" }
+	);
+	let mut response = Json(json!({ "ok": true })).into_response();
+	response
+		.headers_mut()
+		.insert(header::SET_COOKIE, HeaderValue::from_str(&cookie).unwrap());
+	Ok(response)
+}
+
+async fn register(
+	State(app): State<App>,
+	Json(body): Json<LoginBody>,
+) -> Result<Response, ApiError> {
+	let username = body.username.trim().to_lowercase();
+	if !valid_username(&username) {
+		return Err(bad(
+			StatusCode::BAD_REQUEST,
+			"username: 3-32 chars a-z 0-9 _ -",
+		));
+	}
+	if body.password.len() < 8 {
+		return Err(bad(
+			StatusCode::BAD_REQUEST,
+			"password needs 8+ characters",
+		));
+	}
+	// Self-registration is always least privilege: a visitor can only
+	// become a regular admin of their own isolated profiles, never super.
+	let password = body.password.clone();
+	let hash = tokio::task::spawn_blocking(move || hash_password(&password))
+		.await
+		.map_err(|_| bad(StatusCode::INTERNAL_SERVER_ERROR, "hash failed"))??;
+	let mut accounts = app.accounts.lock().await;
+	if accounts.len() >= MAX_ACCOUNTS {
+		return Err(bad(
+			StatusCode::FORBIDDEN,
+			"registration closed, try later",
+		));
+	}
+	if accounts.iter().any(|a| a.username == username) {
+		return Err(bad(StatusCode::CONFLICT, "username already exists"));
+	}
+	accounts.push(Account {
+		username: username.clone(),
+		hash,
+		is_super: false,
+		key: String::new(),
+	});
+	save_accounts(&app.data_dir, &accounts);
+	let ctx = user_ctx(&app.data_dir, &username);
+	app.users.lock().await.insert(username.clone(), ctx);
 	let ttl = if body.remember {
 		REMEMBER_TTL
 	} else {
@@ -1139,6 +1213,7 @@ async fn main() {
 	let api = Router::new()
 		.route("/api/health", get(health))
 		.route("/api/login", post(login))
+		.route("/api/register", post(register))
 		.route("/api/logout", post(logout))
 		.route("/api/me", get(me))
 		.route("/api/google-key", get(google_key))
