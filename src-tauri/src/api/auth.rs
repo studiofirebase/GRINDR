@@ -172,6 +172,150 @@ pub async fn sign_in_with_facebook(
 	Ok(SignInResult::from(result))
 }
 
+/// Sends a request to a phone verification endpoint without a session.
+///
+/// Verification runs before sign-in, when the account has no usable token
+/// yet, so these requests must not touch any existing session state. The
+/// endpoint paths are the ones the official Android client calls.
+async fn post_sms_verification(
+	client: &grindr::GrindrClient,
+	path: String,
+	body: serde_json::Value,
+) -> Result<serde_json::Value, AppError> {
+	let raw = client
+		.request(grindr::Method::POST, &path)
+		.json(&body)
+		.unauthenticated()
+		.send()
+		.await?;
+	if !(200..300).contains(&raw.status) {
+		return Err(pre_auth_api_error(raw.status, &raw.body).into());
+	}
+	if raw.body.is_empty() {
+		return Ok(serde_json::Value::Null);
+	}
+	serde_json::from_slice(&raw.body).map_err(|e| AppError::Http(e.to_string()))
+}
+
+fn pre_auth_api_error(status: u16, body: &[u8]) -> grindr::GrindrError {
+	let json = serde_json::from_slice::<serde_json::Value>(body).ok();
+	let code = json
+		.as_ref()
+		.and_then(|json| json.get("code"))
+		.and_then(|code| code.as_i64())
+		.map(|code| code as i32)
+		.unwrap_or(status as i32);
+	let message = json
+		.as_ref()
+		.and_then(|json| json.get("message"))
+		.and_then(|message| message.as_str())
+		.map(str::to_owned)
+		.unwrap_or_else(|| {
+			format!("SMS verification failed with status {status}")
+		});
+	match status {
+		401 => grindr::GrindrError::Unauthorized { code, message },
+		429 => grindr::GrindrError::RateLimited,
+		_ => grindr::GrindrError::Api { code, message },
+	}
+}
+
+/// Requests a phone verification code by SMS for `profile_id`.
+#[tauri::command]
+pub async fn sms_send_code(
+	state: tauri::State<'_, AppState>,
+	profile_id: String,
+	phone_number: String,
+) -> Result<serde_json::Value, AppError> {
+	let client = state.client()?;
+	let path = format!("/v4/sms/verification/{profile_id}/sendcode");
+	post_sms_verification(
+		&client,
+		path,
+		serde_json::json!({ "phoneNumber": phone_number }),
+	)
+	.await
+}
+
+/// Confirms the SMS verification `code` for `profile_id`.
+///
+/// Like [`sms_send_code`], runs before sign-in without a session.
+#[tauri::command]
+pub async fn sms_verify_code(
+	state: tauri::State<'_, AppState>,
+	profile_id: String,
+	code: String,
+) -> Result<serde_json::Value, AppError> {
+	let client = state.client()?;
+	let path = format!("/v4/sms/verification/{profile_id}/verifycode");
+	post_sms_verification(
+		&client,
+		path,
+		serde_json::json!({ "smsOTPCode": code }),
+	)
+	.await
+}
+
+/// Creates an email + password account without signing in.
+///
+/// `date_of_birth` carries milliseconds since the Unix epoch at UTC
+/// midnight. The account cannot sign in until its phone number is
+/// confirmed, so a code-30 `VerificationRequired` answer is a normal
+/// outcome, not a failure: it resolves to
+/// `{"profileId", "verificationRequired": true}` carrying the new
+/// `profileId` for the SMS step. The endpoint path is the only
+/// account-collection path the official Android client ships.
+#[tauri::command]
+pub async fn create_account(
+	state: tauri::State<'_, AppState>,
+	email: String,
+	password: String,
+	date_of_birth: i64,
+	captcha_token: Option<String>,
+) -> Result<serde_json::Value, AppError> {
+	let client = state.client()?;
+	let mut body = serde_json::json!({
+		"email": email,
+		"password": password,
+		"dateOfBirth": date_of_birth,
+	});
+	if let Some(token) = captcha_token {
+		body["captchaToken"] = serde_json::Value::String(token);
+	}
+	let raw = client
+		.request(grindr::Method::POST, "/v3/accounts/")
+		.json(&body)
+		.unauthenticated()
+		.send()
+		.await?;
+	if (200..300).contains(&raw.status) {
+		return Ok(serde_json::json!({
+			"profileId": created_profile_id(&raw.body),
+			"verificationRequired": false,
+		}));
+	}
+	let refusal = pre_auth_api_error(raw.status, &raw.body);
+	if let grindr::GrindrError::Api { code: 30, .. }
+	| grindr::GrindrError::Unauthorized { code: 30, .. } = refusal
+	{
+		if let Some(profile_id) = created_profile_id(&raw.body) {
+			return Ok(serde_json::json!({
+				"profileId": profile_id,
+				"verificationRequired": true,
+			}));
+		}
+	}
+	Err(refusal.into())
+}
+
+fn created_profile_id(body: &[u8]) -> Option<String> {
+	serde_json::from_slice::<serde_json::Value>(body)
+		.ok()?
+		.get("profileId")?
+		.as_str()
+		.map(str::to_owned)
+}
+
 #[tauri::command]
 pub async fn refresh_session(
 	state: tauri::State<'_, AppState>,

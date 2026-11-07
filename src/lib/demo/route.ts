@@ -92,6 +92,11 @@ export function demoCallMethod(method: string): unknown {
 		case "sign_in_with_facebook":
 		case "refresh_session":
 			return { profileId: demoMeProfileId, restriction: null };
+		case "sms_send_code":
+		case "sms_verify_code":
+			return {};
+		case "create_account":
+			return { profileId: null, verificationRequired: false };
 		case "rotate_api_params":
 			return { "user-agent": "demo", "l-device-info": "demo" };
 		case "recaptcha_first_party_enabled":

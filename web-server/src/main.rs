@@ -35,6 +35,8 @@ struct Saved {
 	name: String,
 	device: grindr::DeviceInfo,
 	credentials: grindr::Credentials,
+	#[serde(default)]
+	geohash: Option<String>,
 }
 
 #[derive(Serialize, serde::Deserialize, Default)]
@@ -87,7 +89,8 @@ struct Inner {
 
 type App = Arc<Inner>;
 
-struct ApiError(StatusCode, String);
+#[derive(Debug)]
+struct ApiError(StatusCode, serde_json::Value);
 
 impl IntoResponse for ApiError {
 	fn into_response(self) -> Response {
@@ -96,7 +99,35 @@ impl IntoResponse for ApiError {
 }
 
 fn bad(status: StatusCode, msg: impl Into<String>) -> ApiError {
-	ApiError(status, msg.into())
+	ApiError(status, json!(msg.into()))
+}
+
+/// Error shape the frontend already understands from native sign-in:
+/// `{ "kind": "Api", "message": { "code", "message" } }` and friends.
+/// Anything else keeps the previous plain-string body.
+fn auth_api_error(error: grindr::GrindrError) -> ApiError {
+	use grindr::GrindrError as Grindr;
+	// Always 422, never 401: the web bridge treats an HTTP 401 as an
+	// expired *admin* session and would pop the admin login over the
+	// Grindr sign-in form.
+	let status = StatusCode::UNPROCESSABLE_ENTITY;
+	match &error {
+		Grindr::Api { code, message } => ApiError(
+			status,
+			json!({ "kind": "Api", "message": { "code": code, "message": message } }),
+		),
+		Grindr::Unauthorized { code, message } => ApiError(
+			status,
+			json!({ "kind": "Unauthorized", "message": { "code": code, "message": message } }),
+		),
+		Grindr::Auth(message) => {
+			ApiError(status, json!({ "kind": "Auth", "message": message }))
+		}
+		Grindr::RateLimited => {
+			ApiError(status, json!({ "kind": "RateLimited" }))
+		}
+		_ => ApiError(status, json!(error.to_string())),
+	}
 }
 
 fn upstream(error: impl std::fmt::Display) -> ApiError {
@@ -302,6 +333,17 @@ fn hash_password(password: &str) -> Result<String, ApiError> {
 		.map_err(|_| bad(StatusCode::INTERNAL_SERVER_ERROR, "hash failed"))
 }
 
+fn verify_password_sync(hash: &str, password: &str) -> bool {
+	use argon2::password_hash::{PasswordHash, PasswordVerifier};
+	PasswordHash::new(hash)
+		.map(|parsed| {
+			argon2::Argon2::default()
+				.verify_password(password.as_bytes(), &parsed)
+				.is_ok()
+		})
+		.unwrap_or(false)
+}
+
 async fn verify_password(hash: String, password: String) -> bool {
 	use argon2::password_hash::{PasswordHash, PasswordVerifier};
 	tokio::task::spawn_blocking(move || {
@@ -356,6 +398,9 @@ async fn login(
 			"invalid username or password",
 		));
 	}
+	// A success proves a human with the password, so past typos stop
+	// counting against the next attempts.
+	*app.failures.lock().await = (0, Instant::now());
 	let ttl = if body.remember {
 		REMEMBER_TTL
 	} else {
@@ -659,6 +704,159 @@ struct EmailBody {
 	captcha_token: Option<String>,
 }
 
+/// Creates a Grindr email + password account without signing in.
+///
+/// `date_of_birth` carries milliseconds since the Unix epoch at UTC
+/// midnight. A code-30 `VerificationRequired` answer is a normal outcome,
+/// not a failure: it resolves to `{"profileId", "verificationRequired":
+/// true}` carrying the new `profileId` for the SMS step. The endpoint
+/// path is the only account-collection path the official Android client
+/// ships.
+async fn create_account(
+	Extension(_who): Extension<Who>,
+	Json(body): Json<CreateAccountBody>,
+) -> Result<Json<Value>, ApiError> {
+	let device = grindr::DeviceInfo::generate();
+	let client = grindr::GrindrClient::new(device, None).map_err(upstream)?;
+	let mut payload = serde_json::json!({
+		"email": body.email,
+		"password": body.password,
+		"dateOfBirth": body.date_of_birth,
+	});
+	if let Some(token) = body.captcha_token {
+		payload["captchaToken"] = serde_json::Value::String(token);
+	}
+	let raw = client
+		.request(grindr::Method::POST, "/v3/accounts/")
+		.json(&payload)
+		.unauthenticated()
+		.send()
+		.await
+		.map_err(auth_api_error)?;
+	if (200..300).contains(&raw.status) {
+		return Ok(Json(serde_json::json!({
+			"profileId": created_profile_id(&raw.body),
+			"verificationRequired": false,
+		})));
+	}
+	let refusal = pre_auth_api_error(raw.status, &raw.body);
+	if matches!(
+		refusal,
+		grindr::GrindrError::Api { code: 30, .. }
+			| grindr::GrindrError::Unauthorized { code: 30, .. }
+	) && created_profile_id(&raw.body).is_some()
+	{
+		return Ok(Json(serde_json::json!({
+			"profileId": created_profile_id(&raw.body),
+			"verificationRequired": true,
+		})));
+	}
+	Err(auth_api_error(refusal))
+}
+
+fn created_profile_id(body: &[u8]) -> Option<String> {
+	serde_json::from_slice::<serde_json::Value>(body)
+		.ok()?
+		.get("profileId")?
+		.as_str()
+		.map(str::to_owned)
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CreateAccountBody {
+	email: String,
+	password: String,
+	date_of_birth: i64,
+	captcha_token: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SmsCodeBody {
+	profile_id: String,
+	phone_number: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SmsVerifyBody {
+	profile_id: String,
+	code: String,
+}
+
+/// Requests a phone verification code by SMS for `profile_id`.
+async fn sms_send_code(
+	Extension(_who): Extension<Who>,
+	Json(body): Json<SmsCodeBody>,
+) -> Result<Json<Value>, ApiError> {
+	send_sms(&body.profile_id, "sendcode", &body.phone_number)
+		.await
+		.map(Json)
+}
+
+/// Confirms the SMS verification `code` for `profile_id`.
+async fn sms_verify_code(
+	Extension(_who): Extension<Who>,
+	Json(body): Json<SmsVerifyBody>,
+) -> Result<Json<Value>, ApiError> {
+	send_sms(&body.profile_id, "verifycode", &body.code)
+		.await
+		.map(Json)
+}
+
+/// Maps a non-success Grindr status into the error the API returned,
+/// mirroring the desktop backend so the web UI handles it the same way.
+fn pre_auth_api_error(status: u16, body: &[u8]) -> grindr::GrindrError {
+	let json = serde_json::from_slice::<serde_json::Value>(body).ok();
+	let code = json
+		.as_ref()
+		.and_then(|json| json.get("code"))
+		.and_then(|code| code.as_i64())
+		.map(|code| code as i32)
+		.unwrap_or(status as i32);
+	let message = json
+		.as_ref()
+		.and_then(|json| json.get("message"))
+		.and_then(|message| message.as_str())
+		.map(str::to_owned)
+		.unwrap_or_else(|| format!("request failed with status {status}"));
+	match status {
+		401 => grindr::GrindrError::Unauthorized { code, message },
+		429 => grindr::GrindrError::RateLimited,
+		_ => grindr::GrindrError::Api { code, message },
+	}
+}
+
+async fn send_sms(
+	profile_id: &str,
+	action: &str,
+	secret: &str,
+) -> Result<serde_json::Value, ApiError> {
+	let device = grindr::DeviceInfo::generate();
+	let client = grindr::GrindrClient::new(device, None).map_err(upstream)?;
+	let key = if action == "sendcode" {
+		"phoneNumber"
+	} else {
+		"smsOTPCode"
+	};
+	let path = format!("/v4/sms/verification/{profile_id}/{action}");
+	let raw = client
+		.request(grindr::Method::POST, &path)
+		.json(&serde_json::json!({ key: secret }))
+		.unauthenticated()
+		.send()
+		.await
+		.map_err(auth_api_error)?;
+	if !(200..300).contains(&raw.status) {
+		return Err(auth_api_error(pre_auth_api_error(raw.status, &raw.body)));
+	}
+	if raw.body.is_empty() {
+		return Ok(serde_json::Value::Null);
+	}
+	serde_json::from_slice(&raw.body).map_err(upstream)
+}
+
 async fn sign_in_email(
 	Extension(who): Extension<Who>,
 	Json(body): Json<EmailBody>,
@@ -677,7 +875,7 @@ async fn sign_in_email(
 		}
 		None => client.sign_in_with_email(&body.email, &body.password).await,
 	}
-	.map_err(upstream)?;
+	.map_err(auth_api_error)?;
 	finish_sign_in(&who, device, client, result, body.email).await
 }
 
@@ -699,7 +897,7 @@ async fn sign_in_google(
 	let result = client
 		.sign_in_with_google(body.token.trim())
 		.await
-		.map_err(upstream)?;
+		.map_err(auth_api_error)?;
 	finish_sign_in(&who, device, client, result, "Google".to_owned()).await
 }
 
@@ -736,6 +934,7 @@ async fn finish_sign_in(
 			name,
 			device,
 			credentials,
+			geohash: None,
 		});
 		store.clients.insert(profile_id.clone(), client.clone());
 		store.active = Some(profile_id.clone());
@@ -768,10 +967,22 @@ async fn list_profiles(Extension(who): Extension<Who>) -> Json<Value> {
 	Json(json!(list))
 }
 
+fn valid_geohash(hash: &str) -> bool {
+	hash.len() == 12
+		&& hash.bytes().all(|byte| {
+			matches!(
+				byte,
+				b'0'..=b'9' | b'b'..=b'h' | b'j'..=b'n' | b'p'..=b'z'
+			)
+		})
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct SwitchBody {
 	profile_id: String,
+	#[serde(default)]
+	geohash: Option<String>,
 }
 
 async fn switch_profile(
@@ -779,12 +990,30 @@ async fn switch_profile(
 	Json(body): Json<SwitchBody>,
 ) -> Result<Json<Value>, ApiError> {
 	let mut store = who.ctx.store.lock().await;
-	if !store.clients.contains_key(&body.profile_id) {
+	if !store.saved.iter().any(|s| s.profile_id == body.profile_id) {
 		return Err(bad(StatusCode::NOT_FOUND, "unknown profile"));
+	}
+	// Remember the leaving profile's location so coming back restores
+	// it; the target's own saved location is returned below.
+	if let Some(leaving) = body.geohash.filter(|hash| valid_geohash(hash)) {
+		if let Some(active) = store.active.clone() {
+			if active != body.profile_id {
+				if let Some(previous) =
+					store.saved.iter_mut().find(|s| s.profile_id == active)
+				{
+					previous.geohash = Some(leaving);
+				}
+			}
+		}
 	}
 	store.active = Some(body.profile_id.clone());
 	who.ctx.persist(&store).await;
-	Ok(Json(json!({ "profileId": body.profile_id })))
+	let geohash = store
+		.saved
+		.iter()
+		.find(|s| s.profile_id == body.profile_id)
+		.and_then(|s| s.geohash.clone());
+	Ok(Json(json!(geohash)))
 }
 
 async fn remove_profile(
@@ -1185,6 +1414,30 @@ async fn main() {
 			let _ = std::fs::rename(&legacy, &ctx.data_file);
 		}
 	}
+	// The super-admin password follows OG_PASSWORD: rotating the secret
+	// and redeploying recovers access even when admins.json survived
+	// with an older hash. Only the super account is ever touched here.
+	if access_email.is_none() {
+		if let Ok(password) = std::env::var("OG_PASSWORD") {
+			if password.len() >= 8 {
+				if let Some(super_account) =
+					accounts.iter_mut().find(|a| a.is_super)
+				{
+					if !verify_password_sync(&super_account.hash, &password) {
+						match hash_password(&password) {
+							Ok(hash) => {
+								super_account.hash = hash;
+								save_accounts(&data_dir, &accounts);
+							}
+							Err(_) => {
+								eprintln!("could not rehash password")
+							}
+						}
+					}
+				}
+			}
+		}
+	}
 	let mut users = HashMap::new();
 	for account in &accounts {
 		let ctx = user_ctx(&data_dir, &account.username);
@@ -1221,6 +1474,9 @@ async fn main() {
 		.route("/api/admins", get(list_admins).post(create_admin))
 		.route("/api/auth/email", post(sign_in_email))
 		.route("/api/auth/google", post(sign_in_google))
+		.route("/api/auth/create-account", post(create_account))
+		.route("/api/auth/sms/send-code", post(sms_send_code))
+		.route("/api/auth/sms/verify-code", post(sms_verify_code))
 		.route("/api/profiles/deselect", post(deselect_profile))
 		.route("/api/profiles", get(list_profiles))
 		.route("/api/profiles/switch", post(switch_profile))
@@ -1264,4 +1520,145 @@ async fn main() {
 	println!("open-grind web server on http://{addr}");
 	let _ = Method::GET;
 	axum::serve(listener, router).await.expect("serve");
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	const LEAVING_GEOHASH: &str = "u4pruydqqvj8";
+	const TARGET_GEOHASH: &str = "u4pruydqqvkp";
+
+	fn saved_profile(id: &str, geohash: Option<&str>) -> Saved {
+		Saved {
+			profile_id: id.to_owned(),
+			name: format!("{id}@example.com"),
+			device: grindr::DeviceInfo::generate(),
+			credentials: grindr::Credentials {
+				email: format!("{id}@example.com"),
+				profile_id: Some(id.to_owned()),
+				auth_token: "token".to_owned(),
+				kind: grindr::SessionKind::Email,
+				third_party_user_id: None,
+			},
+			geohash: geohash.map(str::to_owned),
+		}
+	}
+
+	fn test_app(name: &str) -> App {
+		let dir = std::env::temp_dir()
+			.join(format!("og-switch-test-{}-{name}", std::process::id()));
+		let _ = std::fs::remove_dir_all(&dir);
+		std::fs::create_dir_all(&dir).expect("data dir");
+		let ctx = Arc::new(UserCtx {
+			data_file: dir.join("profiles.json"),
+			store: Mutex::new(Store {
+				saved: vec![
+					saved_profile("a", Some(LEAVING_GEOHASH)),
+					saved_profile("b", Some(TARGET_GEOHASH)),
+				],
+				clients: HashMap::new(),
+				active: Some("a".to_owned()),
+			}),
+		});
+		Arc::new(Inner {
+			origin: None,
+			access_email: None,
+			data_dir: dir,
+			accounts: Mutex::new(vec![Account {
+				username: "tester".to_owned(),
+				hash: String::new(),
+				is_super: false,
+				key: String::new(),
+			}]),
+			users: Mutex::new(HashMap::from([("tester".to_owned(), ctx)])),
+			sessions: Mutex::new(HashMap::new()),
+			failures: Mutex::new((0, Instant::now())),
+			openrouter_key: None,
+			http: reqwest::Client::new(),
+		})
+	}
+
+	async fn test_who(app: &App) -> Who {
+		let users = app.users.lock().await;
+		let ctx = users.get("tester").expect("user").clone();
+		Who {
+			name: "tester".to_owned(),
+			is_super: false,
+			ctx,
+		}
+	}
+
+	#[tokio::test]
+	async fn switch_returns_target_geohash_and_keeps_leaving_one() {
+		let app = test_app("t1");
+		let who = test_who(&app).await;
+		let ctx = who.ctx.clone();
+		let response = switch_profile(
+			Extension(who),
+			Json(SwitchBody {
+				profile_id: "b".to_owned(),
+				geohash: Some("u4pruydqqvjj".to_owned()),
+			}),
+		)
+		.await
+		.expect("switch");
+		assert_eq!(response.0, json!(TARGET_GEOHASH));
+		let store = ctx.store.lock().await;
+		assert_eq!(store.active.as_deref(), Some("b"));
+		let leaving =
+			store.saved.iter().find(|s| s.profile_id == "a").expect("a");
+		assert_eq!(leaving.geohash.as_deref(), Some("u4pruydqqvjj"));
+		// Persisted too: a restart must still restore both locations.
+		drop(store);
+		let raw =
+			std::fs::read(app.data_dir.join("profiles.json")).expect("file");
+		let persisted: serde_json::Value =
+			serde_json::from_slice(&raw).expect("json");
+		let geohashes: Vec<&str> = persisted["profiles"]
+			.as_array()
+			.expect("profiles")
+			.iter()
+			.filter_map(|p| p["geohash"].as_str())
+			.collect();
+		assert!(geohashes.contains(&"u4pruydqqvjj"));
+		assert!(geohashes.contains(&TARGET_GEOHASH));
+	}
+
+	#[tokio::test]
+	async fn switch_to_unknown_profile_is_not_found() {
+		let app = test_app("t2");
+		let who = test_who(&app).await;
+		let error = switch_profile(
+			Extension(who),
+			Json(SwitchBody {
+				profile_id: "zzz".to_owned(),
+				geohash: None,
+			}),
+		)
+		.await
+		.expect_err("unknown");
+		assert_eq!(error.0, StatusCode::NOT_FOUND);
+	}
+
+	#[tokio::test]
+	async fn switch_ignores_malformed_leaving_geohash() {
+		let app = test_app("t3");
+		let who = test_who(&app).await;
+		let ctx = who.ctx.clone();
+		let response = switch_profile(
+			Extension(who),
+			Json(SwitchBody {
+				profile_id: "b".to_owned(),
+				geohash: Some("!!!".to_owned()),
+			}),
+		)
+		.await
+		.expect("switch");
+		assert_eq!(response.0, json!(TARGET_GEOHASH));
+		let store = ctx.store.lock().await;
+		let leaving =
+			store.saved.iter().find(|s| s.profile_id == "a").expect("a");
+		assert_eq!(leaving.geohash.as_deref(), Some(LEAVING_GEOHASH));
+	}
 }

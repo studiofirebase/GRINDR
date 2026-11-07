@@ -85,6 +85,32 @@ export const methods = {
 		request: z.undefined(),
 		response: signInResultSchema,
 	},
+	sms_send_code: {
+		request: z.object({
+			profileId: z.string().min(1),
+			phoneNumber: z.string().min(1),
+		}),
+		response: z.unknown(),
+	},
+	sms_verify_code: {
+		request: z.object({
+			profileId: z.string().min(1),
+			code: z.string().min(1),
+		}),
+		response: z.unknown(),
+	},
+	create_account: {
+		request: z.object({
+			email: z.email(),
+			password: z.string().min(1),
+			dateOfBirth: z.int().nonnegative(),
+			captchaToken: z.string().optional(),
+		}),
+		response: z.object({
+			profileId: z.string().nullish(),
+			verificationRequired: z.boolean(),
+		}),
+	},
 	account_restriction: {
 		request: z.undefined(),
 		response: restrictionSchema.nullish(),
@@ -121,7 +147,10 @@ export const methods = {
 	},
 	profile_add: { request: z.undefined(), response: z.null() },
 	profile_switch: {
-		request: z.object({ profileId: z.string().min(1) }),
+		request: z.object({
+			profileId: z.string().min(1),
+			geohash: geohashSchema.nullable().optional(),
+		}),
 		response: geohashSchema.nullable(),
 	},
 	profile_scan_switch: {

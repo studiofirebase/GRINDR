@@ -13,6 +13,7 @@
 	import { callMethod } from "$lib/api/methods";
 	import {
 		clearAccountPreferences,
+		getPreferences,
 		setPreferences,
 	} from "$lib/app-data/preferences.svelte";
 	import {
@@ -112,8 +113,10 @@
 		if (busy || profile.active) return;
 		busy = true;
 		try {
+			const { geohash: currentGeohash } = await getPreferences();
 			const geohash = await callMethod("profile_switch", {
 				profileId: profile.profileId,
+				geohash: currentGeohash,
 			});
 			clearAccountCaches();
 			await clearAccountPreferences();
@@ -132,10 +135,12 @@
 		if (busy) return;
 		busy = true;
 		try {
+			const { geohash: currentGeohash } = await getPreferences();
 			const original = profiles.find((p) => p.active);
 			if (!profile.active) {
 				await callMethod("profile_switch", {
 					profileId: profile.profileId,
+					geohash: currentGeohash,
 				});
 			}
 			await callMethod("sign_out");

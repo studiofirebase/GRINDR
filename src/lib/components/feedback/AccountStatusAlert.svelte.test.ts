@@ -234,6 +234,26 @@ describe("bans and restrictions", () => {
 });
 
 describe("phone verification", () => {
+	it("verifies in the app when the error carries a profile id", async () => {
+		const dialog = await showError({
+			code: 30,
+			message: "Verification required",
+			profileId: "42",
+		});
+
+		expect(dialog.textContent).toContain(
+			"Enter the phone number for this account",
+		);
+		expect(screen.getByLabelText("Phone number")).toBeTruthy();
+	});
+
+	it("falls back to the official app without a profile id", async () => {
+		const dialog = await showError(verificationRequired);
+
+		expect(dialog.textContent).toContain("in the official Grindr app");
+		expect(screen.queryByLabelText("Phone number")).toBeNull();
+	});
+
 	it("can be dismissed without signing out", async () => {
 		await showError(verificationRequired);
 

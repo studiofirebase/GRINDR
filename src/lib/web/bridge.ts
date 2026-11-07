@@ -41,14 +41,25 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
 		return await api<T>(path, init);
 	}
 	const body = (await response.json().catch(() => ({}))) as {
-		error?: string;
+		error?: string | { kind: string; message?: unknown };
 	};
 	if (!response.ok) {
+		if (body.error !== null && typeof body.error === "object") {
+			// Structured Grindr error (e.g. /api/auth/*): keep the shape
+			// the sign-in flow already handles on native, where the
+			// Tauri bridge also rejects with plain objects.
+			// eslint-disable-next-line @typescript-eslint/only-throw-error
+			throw body.error;
+		}
+		const message =
+			typeof body.error === "string"
+				? body.error
+				: `HTTP ${response.status}`;
 		const kind =
-			response.status === 409 && body.error?.includes("active")
+			response.status === 409 && message.includes("active")
 				? "NotSignedIn"
 				: "Http";
-		throw new BackendError(kind, body.error ?? `HTTP ${response.status}`);
+		throw new BackendError(kind, message);
 	}
 	return body as T;
 }
@@ -435,10 +446,45 @@ async function handle(command: string, args: Args): Promise<unknown> {
 				"Auth",
 				"Facebook sign-in is not available on the web version. Use email or Google token.",
 			);
-		case "profile_switch":
-			await post("/api/profiles/switch", { profileId: args.profileId });
+		case "create_account": {
+			const { email, password, dateOfBirth, captchaToken } = args as {
+				email: string;
+				password: string;
+				dateOfBirth: number;
+				captchaToken?: string;
+			};
+			return await post("/api/auth/create-account", {
+				email,
+				password,
+				dateOfBirth,
+				captchaToken,
+			});
+		}
+		case "sms_send_code": {
+			const { profileId, phoneNumber } = args as {
+				profileId: string;
+				phoneNumber: string;
+			};
+			return await post("/api/auth/sms/send-code", {
+				profileId,
+				phoneNumber,
+			});
+		}
+		case "sms_verify_code": {
+			const { profileId, code } = args as {
+				profileId: string;
+				code: string;
+			};
+			return await post("/api/auth/sms/verify-code", { profileId, code });
+		}
+		case "profile_switch": {
+			const result = await post<string | null>("/api/profiles/switch", {
+				profileId: args.profileId,
+				geohash: (args.geohash as string | null | undefined) ?? null,
+			});
 			reopenSocketIfWanted();
-			return null;
+			return result;
+		}
 		case "sign_out": {
 			const active = await activeProfile();
 			if (active) {

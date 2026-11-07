@@ -19,6 +19,7 @@
 		restrictionSchema,
 	} from "$lib/api/methods";
 	import { signOut } from "$lib/api/sign-out";
+	import PhoneVerificationForm from "$lib/components/feedback/PhoneVerificationForm.svelte";
 	import * as AlertDialog from "$lib/components/ui/alert-dialog";
 	import { Button, buttonVariants } from "$lib/components/ui/button";
 	import Link from "$lib/components/ui/link/Link.svelte";
@@ -147,10 +148,12 @@
 			};
 		}
 		if (status?.kind === "phoneVerificationRequired") {
+			const verifiable = status.error.profileId ?? null;
 			return {
 				title: "Phone verification required",
-				description:
-					"Verify your phone number in the official Grindr app, then sign in again.",
+				description: verifiable
+					? "Enter the phone number for this account to receive a verification code, then enter the code. After verifying, sign in again."
+					: "Verify your phone number in the official Grindr app, then sign in again.",
 				details: status.error,
 				closeLabel: "OK",
 			};
@@ -265,6 +268,12 @@
 				{/if}
 			</AlertDialog.Description>
 		</AlertDialog.Header>
+		{#if status?.kind === "phoneVerificationRequired" && status.error.profileId}
+			<PhoneVerificationForm
+				profileId={status.error.profileId}
+				onVerified={dismissAccountStatus}
+			/>
+		{/if}
 		<AlertDialog.Footer>
 			<fieldset disabled={running !== false} class="contents">
 				{#if content.details !== undefined}
