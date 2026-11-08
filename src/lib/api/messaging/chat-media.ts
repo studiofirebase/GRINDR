@@ -2,7 +2,11 @@ import z from "zod";
 
 import { signedInProfileId } from "$lib/api/current-session";
 import { uploadRefusalMessage } from "$lib/api/methods";
-import { invokeRest, uploadFileRest } from "$lib/api/transport";
+import {
+	invokeRest,
+	uploadFileRest,
+	uploadWebMediaFile,
+} from "$lib/api/transport";
 import { demoEnabled, demoUploadChatMedia } from "$lib/demo";
 import { mediaUrlSchema } from "$lib/model/media";
 import {
@@ -80,6 +84,13 @@ async function uploadChatMedia({
 			bytes: new Uint8Array(await media.file.arrayBuffer()),
 			contentType,
 		});
+	}
+	if (media.source === "web") {
+		const response = await uploadWebMediaFile({
+			target: "chat",
+			file: media.file,
+		});
+		return response.jsonParsed(mediaUploadResponseSchema);
 	}
 	const file = mediaFileDescriptor(media);
 	const path = chatMediaUploadPath({ takenOnGrindr, inspection });

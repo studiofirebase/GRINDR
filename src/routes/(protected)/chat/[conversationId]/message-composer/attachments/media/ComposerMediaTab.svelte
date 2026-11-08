@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { isTauri } from "@tauri-apps/api/core";
 	import { toast } from "svelte-sonner";
 
 	import {
@@ -15,6 +16,7 @@
 	import { pickMultipleMedia } from "$lib/platform/media-picker";
 	import { proxyMediaUrl } from "$lib/util/media";
 	import { SelectionSet } from "$lib/util/selection.svelte";
+	import { webBackendEnabled } from "$lib/web/bridge";
 	import { getConversationState } from "../../../conversation-state.svelte";
 	import { getMessageComposerContext } from "../../message-composer-context.svelte";
 	import type { TabSelection } from "../tabs";
@@ -34,6 +36,10 @@
 	const composer = getMessageComposerContext();
 	const conversationState = $derived(getConversationState()());
 	const selected = new SelectionSet<number>(10);
+	const addLabel =
+		webBackendEnabled && !isTauri()
+			? "Upload photos"
+			: "Upload photos or videos";
 
 	let media = $state<DrawerMedia[] | null>(null);
 	let error = $state<unknown>(null);
@@ -122,7 +128,7 @@
 	{selected}
 	onToggle={toggleSelected}
 	emptyTitle="No media sent yet"
-	addLabel="Upload photos or videos"
+	{addLabel}
 	onAdd={addMedia}
 	pending={uploadingCount}
 	remove={(item) => deleteDrawerMedia(item.id)}

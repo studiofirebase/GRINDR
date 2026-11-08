@@ -1,9 +1,10 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invoke, isTauri } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { AndroidFs, type AndroidFsUri } from "tauri-plugin-android-fs-api";
 
 import { demoEnabled } from "$lib/demo";
 import { isAndroidPlatform } from "$lib/platform/os";
+import { webBackendEnabled } from "$lib/web/bridge";
 
 type MediaFilter = { name: string; extensions: string[]; mimeTypes: string[] };
 
@@ -65,8 +66,10 @@ async function pick({
 }): Promise<PickedMedia[]> {
 	const filter = filtersByKind[kind];
 
-	if (demoEnabled) {
-		const files = await pickWebFiles({ filter, multiple });
+	if (demoEnabled || (webBackendEnabled && !isTauri())) {
+		const webFilter =
+			!demoEnabled && kind === "media" ? filtersByKind.image : filter;
+		const files = await pickWebFiles({ filter: webFilter, multiple });
 		return files.map(
 			(file): PickedMedia => ({
 				source: "web",
@@ -144,13 +147,28 @@ function pickWebFiles({
 	filter: MediaFilter;
 	multiple: boolean;
 }): Promise<File[]> {
-	return new Promise((resolve) => {
+	return new Promise((resolve, reject) => {
 		const input = document.createElement("input");
 		input.type = "file";
 		input.accept = filter.mimeTypes.join(",");
 		input.multiple = multiple;
-		input.onchange = () => resolve(Array.from(input.files ?? []));
-		input.oncancel = () => resolve([]);
-		input.click();
+		input.tabIndex = -1;
+		input.setAttribute("aria-hidden", "true");
+		input.style.position = "fixed";
+		input.style.left = "-10000px";
+		input.style.opacity = "0";
+		const finish = (files: File[]) => {
+			input.remove();
+			resolve(files);
+		};
+		input.onchange = () => finish(Array.from(input.files ?? []));
+		input.oncancel = () => finish([]);
+		document.body.append(input);
+		try {
+			input.click();
+		} catch (error) {
+			input.remove();
+			reject(error instanceof Error ? error : new Error(String(error)));
+		}
 	});
 }

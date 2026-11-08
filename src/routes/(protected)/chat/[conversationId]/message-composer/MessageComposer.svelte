@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { isTauri } from "@tauri-apps/api/core";
 	import { onNavigate } from "$app/navigation";
 	import CircleNotchIcon from "phosphor-svelte/lib/CircleNotchIcon";
 	import SparkleIcon from "phosphor-svelte/lib/SparkleIcon";
@@ -55,7 +56,7 @@
 	const { drafts } = getConversations();
 	const sheets = getComposerSheets();
 	const mobile = below("split");
-	const desktop = isDesktopPlatform();
+	const showAiReplyButton = !isTauri() || isDesktopPlatform();
 
 	let textContent = $state(untrack(() => drafts.get(conversationId)));
 	let suggestingReply = $state(false);
@@ -207,7 +208,7 @@
 		onSubmit().catch((error) => console.error(error));
 	}}
 >
-	{#if desktop && textContent.trim() === ""}
+	{#if showAiReplyButton && textContent.trim() === ""}
 		<div class="flex justify-end">
 			<Button
 				type="button"

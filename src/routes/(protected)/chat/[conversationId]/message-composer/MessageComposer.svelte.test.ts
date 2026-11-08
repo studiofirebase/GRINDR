@@ -12,21 +12,32 @@ import {
 } from "$lib/platform/back-gesture-event.svelte";
 import { ComposerSheetsState } from "./composer-sheets-state.svelte";
 
-const { conversations, composerSheets, conversationState, desktopPlatform } =
-	vi.hoisted(() => ({
-		conversations: { drafts: null as Drafts | null },
-		composerSheets: { current: null as ComposerSheetsState | null },
-		conversationState: { conversationId: "a:1" },
-		desktopPlatform: { current: false },
-	}));
+const {
+	conversations,
+	composerSheets,
+	conversationState,
+	desktopPlatform,
+	tauriRuntime,
+} = vi.hoisted(() => ({
+	conversations: { drafts: null as Drafts | null },
+	composerSheets: { current: null as ComposerSheetsState | null },
+	conversationState: { conversationId: "a:1" },
+	desktopPlatform: { current: false },
+	tauriRuntime: { current: false },
+}));
 
 vi.mock("$app/navigation", () => ({ onNavigate: vi.fn() }));
+vi.mock("@tauri-apps/api/core", async (importOriginal) => ({
+	...(await importOriginal<typeof import("@tauri-apps/api/core")>()),
+	isTauri: () => tauriRuntime.current,
+}));
 vi.mock("$lib/chat/conversations-context.svelte", () => ({
 	getConversations: () => conversations,
 }));
 vi.mock("$lib/platform/os", async (importOriginal) => ({
 	...(await importOriginal<typeof import("$lib/platform/os")>()),
 	isDesktopPlatform: () => desktopPlatform.current,
+	isMobilePlatform: () => tauriRuntime.current && !desktopPlatform.current,
 }));
 vi.mock("./send-media/send-media-offer.svelte", () => ({
 	getSendMediaOffer: () => ({ lend: () => {}, offer: async () => {} }),
@@ -72,6 +83,7 @@ beforeEach(() => {
 	sheets = new ComposerSheetsState();
 	composerSheets.current = sheets;
 	desktopPlatform.current = false;
+	tauriRuntime.current = false;
 });
 
 function renderComposer({
@@ -113,6 +125,7 @@ describe("MessageComposer drafts", () => {
 		drafts = new Drafts();
 		conversations.drafts = drafts;
 		desktopPlatform.current = false;
+		tauriRuntime.current = false;
 	});
 
 	afterEach(cleanup);
@@ -219,8 +232,30 @@ describe("MessageComposer drafts", () => {
 		]);
 	});
 
+	it("shows Send with AI in web conversations", () => {
+		const { getByRole } = renderComposer();
+
+		expect(
+			getByRole("button", {
+				name: "Generate and send a reply with OpenRouter AI",
+			}),
+		).toBeTruthy();
+	});
+
+	it("keeps Send with AI hidden in native mobile apps", () => {
+		tauriRuntime.current = true;
+		const { queryByRole } = renderComposer();
+
+		expect(
+			queryByRole("button", {
+				name: "Generate and send a reply with OpenRouter AI",
+			}),
+		).toBeNull();
+	});
+
 	it("generates and sends an AI reply instead of placing it in the composer", async () => {
 		desktopPlatform.current = true;
+		tauriRuntime.current = true;
 		const onSuggestReply = vi.fn(() => Promise.resolve("  AI response  "));
 		const onSend = vi.fn();
 		const { getByRole, textarea } = renderComposer({
@@ -248,6 +283,7 @@ describe("MessageComposer drafts", () => {
 
 	it("does not send an empty or stale AI reply", async () => {
 		desktopPlatform.current = true;
+		tauriRuntime.current = true;
 		const onSend = vi.fn();
 		const onSuggestReply = vi.fn(() => Promise.resolve(""));
 		const { getByRole } = renderComposer({ onSuggestReply, onSend });
@@ -264,6 +300,7 @@ describe("MessageComposer drafts", () => {
 
 	it("disables Send with AI until there is a new incoming text", () => {
 		desktopPlatform.current = true;
+		tauriRuntime.current = true;
 		const { getByRole } = renderComposer({ canSuggestReply: false });
 		const button = getByRole("button", {
 			name: "Generate and send a reply with OpenRouter AI",

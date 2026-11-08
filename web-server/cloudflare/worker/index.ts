@@ -52,9 +52,9 @@ interface Env {
 	OPENROUTER_API_KEY?: string;
 }
 
-// Force one key refresh after deployment 2026-11-07. Keep this value stable
-// afterward so ordinary Worker uploads do not restart the container.
-const OPENROUTER_KEY_SYNC_GENERATION = "2026-11-07-runtime-refresh-v3";
+// Force the singleton onto the newly deployed web image once. Keep this value
+// stable afterward so ordinary Worker uploads do not restart the container.
+const OPENROUTER_KEY_SYNC_GENERATION = "2026-11-07-web-bundle-v5";
 
 async function openrouterKeyFingerprint(
 	key: string | undefined,

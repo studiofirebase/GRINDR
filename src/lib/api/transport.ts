@@ -22,6 +22,7 @@ import { demoEnabled, demoRoute } from "$lib/demo";
 import { deprecatedClientVersionErrorSchema } from "$lib/model/authentication";
 import { schemaName } from "$lib/model/schema-names";
 import { fromBase64, toBase64 } from "$lib/util/base64";
+import { webBackendEnabled } from "$lib/web/bridge";
 import type { MediaFileDescriptor } from "$lib/platform/media-file";
 
 type RequestInfo = { method: string; path: string; body?: unknown };
@@ -265,6 +266,93 @@ export async function uploadFileRest(
 		};
 	} catch (error) {
 		throw restInvokeError({ error, requestInfo });
+	}
+}
+
+export async function uploadWebMediaFile({
+	target,
+	file,
+}: {
+	target: "chat" | "profile";
+	file: File;
+}) {
+	const path =
+		target === "profile"
+			? "/v4/media/upload?takenOnGrindr=false"
+			: "/v5/chat/media/upload?takenOnGrindr=false";
+	const requestInfo = { method: "POST", path };
+	if (!webBackendEnabled) {
+		throw new ApiError({
+			message: "Media uploads aren't available in this web build",
+			request: requestInfo,
+		});
+	}
+	if (file.size > 64 * 1024 * 1024) {
+		throw new ApiError({
+			message: "Photos over 64 MB can't be uploaded",
+			request: requestInfo,
+			kind: "ContentTooLarge",
+		});
+	}
+	let normalized: Blob;
+	try {
+		const bitmap = await createImageBitmap(file);
+		try {
+			const scale = Math.min(
+				1,
+				1024 / Math.max(bitmap.width, bitmap.height),
+			);
+			const canvas = document.createElement("canvas");
+			canvas.width = Math.max(1, Math.round(bitmap.width * scale));
+			canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+			const context = canvas.getContext("2d");
+			if (!context) throw new Error("Canvas is unavailable");
+			context.fillStyle = "white";
+			context.fillRect(0, 0, canvas.width, canvas.height);
+			context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+			normalized = await new Promise<Blob>((resolve, reject) => {
+				canvas.toBlob(
+					(blob) =>
+						blob
+							? resolve(blob)
+							: reject(new Error("Photo encoding failed")),
+					"image/jpeg",
+					0.85,
+				);
+			});
+		} finally {
+			bitmap.close();
+		}
+	} catch (error) {
+		throw new ApiError({
+			message: "That photo can't be read in this browser",
+			request: requestInfo,
+			kind: "Media",
+			cause: error,
+		});
+	}
+	try {
+		const response = await fetch(`/api/media/upload?target=${target}`, {
+			method: "POST",
+			credentials: "same-origin",
+			headers: { "content-type": "image/jpeg" },
+			body: normalized,
+		});
+		return buildRestResponse({
+			status: response.status,
+			responseBody: new Uint8Array(await response.arrayBuffer()),
+			requestInfo,
+			ErrorClass: ExternalRequestError,
+		});
+	} catch (error) {
+		if (error instanceof ApiError) throw error;
+		throw new ExternalRequestError({
+			message: "Couldn't connect to the web upload service",
+			request: requestInfo,
+			response: null,
+			kind: "Connect",
+			cause: error,
+		});
 	}
 }
 

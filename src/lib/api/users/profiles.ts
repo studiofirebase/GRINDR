@@ -4,7 +4,7 @@ import { ApiError } from "$lib/api/api-error";
 import { getBlockedUsers } from "$lib/api/browse/blocks";
 import { getHiddenUsers } from "$lib/api/browse/hides";
 import { FetchCache } from "$lib/api/cache";
-import { fetchRest, invokeRest } from "$lib/api/transport";
+import { fetchRest, invokeRest, uploadWebMediaFile } from "$lib/api/transport";
 import {
 	ProfileModerationError,
 	readBannedTerms,
@@ -357,12 +357,19 @@ export async function uploadProfilePhoto(
 	if (demoEnabled) {
 		throw new Error("Profile photos can't be uploaded in the demo");
 	}
-	const file = mediaFileDescriptor(media);
 	const path = "/v4/media/upload?takenOnGrindr=false";
-	const response = await invokeRest("upload_media", {
-		args: { path, signed: false, file, squareThumb: true },
-		requestInfo: { method: "POST", path },
-	});
+	const response =
+		media.source === "web"
+			? await uploadWebMediaFile({ target: "profile", file: media.file })
+			: await invokeRest("upload_media", {
+					args: {
+						path,
+						signed: false,
+						file: mediaFileDescriptor(media),
+						squareThumb: true,
+					},
+					requestInfo: { method: "POST", path },
+				});
 	const [uploaded] = response.jsonParsed(
 		uploadProfilePhotoResponseSchema,
 	).imageSizes;
