@@ -1,0 +1,67 @@
+{
+  "name": "Open Grind Community",
+  "subtitle": "Unofficial iOS build for AltStore Classic",
+  "description": "Unofficial community iOS build of Open Grind. Not affiliated with or endorsed by Grindr LLC.",
+  "iconURL": "https://github.com/studiofirebase/GRINDR/releases/download/altstore-v0.1.0/Open-Grind-icon.png",
+  "website": " https://github.com/studiofirebase/GRINDR/releases/latest/download/altstore.json",
+  "featuredApps": [
+    "italosantos.com"
+  ],
+  "news": [],
+  "apps": [
+    {
+      "name": "Grindr Modificado V1",
+      "bundleIdentifier": "italosantos.com",
+      "developerName": "Italo Santos",
+      "subtitle": "Unofficial Open Grind community build",
+      "localizedDescription": "Unofficial community build. Not affiliated with or endorsed by Grindr LLC. Install with AltStore Classic and AltServer; direct installation may be limited by the included development profile.",
+      "iconURL": "https://github.com/studiofirebase/GRINDR/releases/download/altstore-v0.1.0/Open-Grind-icon.png",
+      "category": "social",
+      "beta": true,
+      "versions": [
+        {
+          "version": "24.19.2",
+          "buildVersion": "63013.134653603.99",
+          "date": "2026-11-13T23:01:12Z",
+          "downloadURL": "",
+          "size": 116155537,
+          "minOSVersion": "15"
+        },
+        {
+          "version": "1.0",
+          "buildVersion": "1",
+          "date": "2026-11-13T23:00:29Z",
+          "downloadURL": "",
+          "size": 0
+        },
+        {
+          "version": "0.1.0",
+          "buildVersion": "0.1.0",
+          "date": "2026-11-07T11:12:17Z",
+          "downloadURL": "https://github.com/studiofirebase/GRINDR/releases/latest/download/altstore.json",
+          "size": 45681125,
+          "minOSVersion": "14.0"
+        }
+      ],
+      "appPermissions": {
+        "entitlements": [
+          "get-task-allow"
+        ],
+        "privacy": {
+          "NSCalendarsUsageDescription": "Adding events",
+          "NSCameraUsageDescription": "To take photos and video for your profile and chats, Grindr needs permission to access your camera.",
+          "NSFaceIDUsageDescription": "To let you access the app using Face ID if you enable a PIN",
+          "NSLocationWhenInUseUsageDescription": "To show you people nearby, Grindr needs permission to access your location. Your exact location will not be shown.",
+          "NSMicrophoneUsageDescription": "This lets you record audio clips and send voice messages.",
+          "NSMotionUsageDescription": "Interactive ad controls",
+          "NSPhotoLibraryAddUsageDescription": "To save a photo, Grindr needs permission to access your photo library.",
+          "NSPhotoLibraryUsageDescription": "To select a photo, Grindr needs permission to access your photo library.",
+          "NSUserTrackingUsageDescription": "Tracking helps us serve you relevant ads and keep Grindr free."
+        }
+      },
+      "patreon": {
+        "hidden": true
+      }
+    }
+  ]
+}
